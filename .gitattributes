@@ -1,0 +1,23 @@
+# Force GitHub Linguist to recognize the native code in this repo
+*.c linguist-detectable=true
+*.h linguist-detectable=true
+*.cpp linguist-detectable=true
+*.hpp linguist-detectable=true
+*.rs linguist-detectable=true
+*.c linguist-language=C
+*.h linguist-language=C
+*.cpp linguist-language=C++
+*.hpp linguist-language=C++
+*.rs linguist-language=Rust
+
+# Keep generated and vendor-heavy folders out of the language stats
+Frontend/Desktop/App/bin/** linguist-generated=true
+Frontend/Desktop/App/obj/** linguist-generated=true
+Frontend/Web/node_modules/** linguist-generated=true
+**/node_modules/** linguist-generated=true
+**/dist/** linguist-generated=true
+**/build/** linguist-generated=true
+
+# Rust folders should count as source
+Systems/Rust/** linguist-vendored=false
+Systems/Rust/** linguist-generated=false
