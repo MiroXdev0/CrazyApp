@@ -4,14 +4,14 @@
 *.cpp linguist-detectable=true
 *.hpp linguist-detectable=true
 *.rs linguist-detectable=true
+*.sql linguist-detectable=true
+
 *.c linguist-language=C
 *.h linguist-language=C
 *.cpp linguist-language=C++
 *.hpp linguist-language=C++
 *.rs linguist-language=Rust
-*.rs linguist-vendored=true
 *.sql linguist-language=SQL
-*.sql linguist-vendored=true
 
 # Keep generated and vendor-heavy folders out of the language stats
 Frontend/Desktop/App/bin/** linguist-generated=true
@@ -21,6 +21,8 @@ Frontend/Web/node_modules/** linguist-generated=true
 **/dist/** linguist-generated=true
 **/build/** linguist-generated=true
 
-# Rust folders should count as source
+# These are source folders, not vendored dependencies
 Systems/Rust/** linguist-vendored=false
 Systems/Rust/** linguist-generated=false
+Database/** linguist-vendored=false
+Database/** linguist-generated=false
