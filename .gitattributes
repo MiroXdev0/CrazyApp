@@ -9,6 +9,9 @@
 *.cpp linguist-language=C++
 *.hpp linguist-language=C++
 *.rs linguist-language=Rust
+*.rs linguist-vendored=true
+*.sql linguist-language=SQL
+*.sql linguist-vendored=true
 
 # Keep generated and vendor-heavy folders out of the language stats
 Frontend/Desktop/App/bin/** linguist-generated=true
