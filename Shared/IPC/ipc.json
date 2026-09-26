@@ -1,0 +1,10 @@
+{
+  "protocol": "nexus-ipc",
+  "version": 1,
+  "messages": [
+    "register_node",
+    "job_dispatch",
+    "job_result",
+    "heartbeat"
+  ]
+}
