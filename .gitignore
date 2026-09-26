@@ -1,0 +1,69 @@
+# IDE and editor files
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# .NET / C# build output
+bin/
+obj/
+[Bb]uild/
+Debug/
+Release/
+artifacts/
+TestResults/
+*.log
+*.pdb
+*.mdb
+*.cache
+
+# Node / Bun / Web frontend
+node_modules/
+.env
+.env.*
+.cache/
+.parcel-cache/
+.next/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Demo / local scratch files
+demo/
+local/
+scratch/
+tmp/
+
+# Databases and local data
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+
+# Temporary files
+*.tmp
+*.temp
