@@ -1,7 +1,6 @@
-bits 64
-
-section .text
-    global crazyapp_asm_sum
+    .intel_syntax noprefix
+    .text
+    .globl crazyapp_asm_sum
 
 crazyapp_asm_sum:
     xor r8, r8
@@ -10,7 +9,7 @@ crazyapp_asm_sum:
 .loop:
     cmp rcx, rsi
     jae .done
-    mov eax, dword [rdi + rcx * 4]
+    mov eax, DWORD PTR [rdi + rcx * 4]
     add r8, rax
     inc rcx
     jmp .loop
