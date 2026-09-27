@@ -4,6 +4,11 @@ import os
 import socket
 import time
 
+try:
+    from .job_system import NodrenCore, TaskSpec
+except ImportError:
+    from job_system import NodrenCore, TaskSpec
+
 
 class CrazyAppNode:
     def __init__(self, host: str = "127.0.0.1", port: int = 8080):
@@ -41,25 +46,28 @@ class CrazyAppNode:
             await writer.drain()
 
     def handle_dispatch(self, packet: dict):
-        payload = packet.get("payload", [])
-        if isinstance(payload, list):
-            value = sum(int(item) for item in payload)
-        elif isinstance(payload, dict):
-            value = sum(int(item) for item in payload.get("values", []))
-        else:
-            value = 0
-
+        task = TaskSpec(
+            id=str(packet.get("task_id", "unknown-task")),
+            type=str(packet.get("task_type", "sum")),
+            payload=packet.get("payload", []),
+            required_cpu_cores=int(packet.get("required_cpu_cores", 1)),
+            required_ram_gb=int(packet.get("required_ram_gb", 1)),
+            node_id=packet.get("node_id", self.node_id),
+            status="RUNNING",
+        )
+        result = NodrenCore.execute_task(task)
         return {
-            "task_id": packet.get("task_id", "unknown-task"),
+            "task_id": task.id,
             "node_id": packet.get("node_id", self.node_id),
             "status": "COMPLETED",
-            "value": value,
+            "value": result["value"],
+            "output": result["output"],
             "message": "task executed by node core",
         }
 
     async def run(self):
         reader, writer = await asyncio.open_connection(self.host, self.port)
-        print(f"[node] connected as {self.node_id}")
+        print(f"[node] connected as {self.node_id} ({self.hostname})")
         await self.register(writer)
 
         heartbeat_task = asyncio.create_task(self.heartbeat_loop(writer))
@@ -82,6 +90,7 @@ class CrazyAppNode:
                         "node_id": self.node_id,
                         "status": result["status"],
                         "value": result["value"],
+                        "output": result.get("output"),
                     }
                     writer.write((json.dumps(response) + "\n").encode())
                     await writer.drain()

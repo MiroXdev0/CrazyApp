@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="NEXUS API")
+app = FastAPI(title="Nodren API")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "nexus"}
+    return {"status": "ok", "service": "nodren"}
 
 @app.get("/nodes")
 def nodes():

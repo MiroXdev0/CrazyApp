@@ -239,7 +239,7 @@ class CrazyAppController:
 
     async def start(self):
         self.server = await asyncio.start_server(self.handle_client, self.host, self.port)
-        print(f"CrazyApp Controller started on {self.host}:{self.port}")
+        print(f"Nodren Controller started on {self.host}:{self.port}")
         asyncio.create_task(self.cleanup_lost_nodes())
         async with self.server:
             await self.server.serve_forever()

@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -17,6 +19,7 @@ type NodeClient struct {
 	OS         string
 	Arch       string
 	conn       net.Conn
+	outbound   *BoundedQueue
 }
 
 func NewNodeClient() *NodeClient {
@@ -28,6 +31,7 @@ func NewNodeClient() *NodeClient {
 		RAMGB:      16,
 		OS:         runtimeOS(),
 		Arch:       runtimeArch(),
+		outbound:   NewBoundedQueue(256),
 	}
 }
 
@@ -39,6 +43,43 @@ func runtimeArch() string {
 	return "amd64"
 }
 
+func (n *NodeClient) sendFrame(msgType MessageType, requestID uint64, payload []byte) error {
+	frame, err := EncodeFrame(msgType, requestID, payload)
+	if err != nil {
+		return err
+	}
+	return n.outbound.Push(frame)
+}
+
+func (n *NodeClient) writeLoop(conn net.Conn) {
+	for {
+		payload, ok := n.outbound.Pop()
+		if !ok {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		if _, err := conn.Write(payload); err != nil {
+			return
+		}
+	}
+}
+
+func readFrame(reader *bufio.Reader) ([]byte, error) {
+	header := make([]byte, binaryFrameHeaderSize)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return nil, err
+	}
+	size := int(binary.LittleEndian.Uint32(header[2:6]))
+	body := make([]byte, size)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		return nil, err
+	}
+	frame := make([]byte, 0, binaryFrameHeaderSize+size)
+	frame = append(frame, header...)
+	frame = append(frame, body...)
+	return frame, nil
+}
+
 func (n *NodeClient) StartController(addr string) error {
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -47,7 +88,9 @@ func (n *NodeClient) StartController(addr string) error {
 	n.conn = conn
 	defer conn.Close()
 
-	payload, _ := SerializeNodeInfo(NodeInfo{
+	go n.writeLoop(conn)
+
+	payload, _ := json.Marshal(NodeInfo{
 		NodeID:     n.ID,
 		Hostname:   n.Hostname,
 		CPUThreads: n.CPUThreads,
@@ -56,51 +99,72 @@ func (n *NodeClient) StartController(addr string) error {
 		Arch:       n.Arch,
 		Status:     "READY",
 	})
-	registered, _ := EncodeMessage(MsgRegister, payload)
-	if _, err = conn.Write([]byte(registered + "\n")); err != nil {
+	if err := n.sendFrame(MessageTypeRegister, 1, payload); err != nil {
 		return err
 	}
 
 	reader := bufio.NewReader(conn)
 	for {
-		line, err := reader.ReadString('\n')
+		frameBytes, err := readFrame(reader)
 		if err != nil {
 			return err
 		}
-		line = strings.TrimSpace(line)
-		if line == "HEARTBEAT_ACK" {
-			fmt.Println("[node] heartbeat ack")
+		frame, err := DecodeFrame(frameBytes)
+		if err != nil {
+			return err
 		}
-		if line == "REGISTER_ACK" {
+		switch frame.Type {
+		case MessageTypeRegisterAck:
 			fmt.Println("[node] registered")
-		}
-		if line == "DISCONNECT_ACK" {
+		case MessageTypeHeartbeat:
+			if err := n.sendFrame(MessageTypeHeartbeatAck, frame.RequestID, []byte(n.ID)); err != nil {
+				return err
+			}
+		case MessageTypeReady:
+			fmt.Println("[node] controller ready")
+		case MessageTypeTaskBatch:
+			tasks, err := DecodeTaskBatch(frame.Payload)
+			if err != nil {
+				return err
+			}
+			results, err := ExecuteNativeTaskBatch(tasks)
+			if err != nil {
+				return err
+			}
+			for i := range results {
+				results[i].NodeID = n.ID
+				if results[i].JobID == "" {
+					results[i].JobID = fmt.Sprintf("job-%d", i)
+				}
+			}
+			batch, err := EncodeTaskResultBatch(results)
+			if err != nil {
+				return err
+			}
+			if err := n.sendFrame(MessageTypeTaskResultBatch, frame.RequestID, batch); err != nil {
+				return err
+			}
+		case MessageTypeGoodbye:
 			return nil
-		}
-
-		if strings.Contains(line, "COMMAND") {
-			_ = conn.Write([]byte("COMMAND_RESULT\n"))
-		}
-
-		// Simple heartbeat loop
-		if line == "" {
-			_ = conn.Write([]byte("HEARTBEAT\n"))
-		}
-		if strings.Contains(line, "HEARTBEAT") {
-			_ = conn.Write([]byte("HEARTBEAT\n"))
-		}
-		if strings.Contains(line, "PING") {
-			_ = conn.Write([]byte("PONG\n"))
-		}
-		if strings.Contains(line, "COMMAND_RESULT") {
-			return nil
+		case MessageTypeError:
+			return fmt.Errorf("controller error: %s", string(frame.Payload))
 		}
 	}
 }
 
-func main() {
+func (n *NodeClient) heartbeatLoop() {
+	for {
+		time.Sleep(5 * time.Second)
+		if err := n.sendFrame(MessageTypeHeartbeat, uint64(time.Now().UnixNano()), []byte(n.ID)); err != nil {
+			return
+		}
+	}
+}
+
+func runNodeClient() {
 	client := NewNodeClient()
-	fmt.Printf("CrazyApp Node: %s\n", client.ID)
+	fmt.Printf("Nodren Node: %s\n", client.ID)
+	go client.heartbeatLoop()
 	if err := client.StartController("127.0.0.1:8080"); err != nil {
 		fmt.Println("node connection failed:", err)
 	}

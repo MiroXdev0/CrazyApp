@@ -1,4 +1,4 @@
-# NEXUS Roadmap
+# Nodren Roadmap
 
 ## Goal
 Build a distributed compute fabric that merges multiple PCs into a single execution platform.

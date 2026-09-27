@@ -67,3 +67,6 @@ tmp/
 # Temporary files
 *.tmp
 *.temp
+
+# build files
+*.exe

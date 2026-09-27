@@ -1,6 +1,6 @@
-# NEXUS
+# Nodren
 
-NEXUS is a distributed compute platform that treats multiple ordinary PCs as one shared computational machine.
+Nodren is a distributed compute platform that treats multiple ordinary PCs as one shared computational machine.
 
 The project is designed around a real distributed runtime architecture:
 - a controller for orchestration and scheduling
@@ -27,7 +27,7 @@ The system decides:
 ## Architecture
 
 ```text
-NEXUS
+Nodren
 ├── Frontend/
 │   ├── Desktop/      # C# + Avalonia UI
 │   └── Web/          # TS + HTML + CSS dashboard

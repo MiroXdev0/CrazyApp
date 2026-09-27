@@ -1,21 +1,121 @@
 package main
 
 import (
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"sync"
 	"time"
 )
 
+type NodeSession struct {
+	conn     net.Conn
+	outbound *BoundedQueue
+	nodeID   string
+	state    string
+	mu       sync.Mutex
+}
+
+func newNodeSession(conn net.Conn) *NodeSession {
+	return &NodeSession{
+		conn:     conn,
+		outbound: NewBoundedQueue(256),
+		state:    "CONNECT",
+	}
+}
+
+func (s *NodeSession) sendFrame(msgType MessageType, requestID uint64, payload []byte) error {
+	frame, err := EncodeFrame(msgType, requestID, payload)
+	if err != nil {
+		return err
+	}
+	if err := s.outbound.Push(frame); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *NodeSession) writeLoop() {
+	for {
+		frame, ok := s.outbound.Pop()
+		if !ok {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		if _, err := s.conn.Write(frame); err != nil {
+			return
+		}
+	}
+}
+
+func readFrameFromConn(conn net.Conn) ([]byte, error) {
+	header := make([]byte, binaryFrameHeaderSize)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+	size := int(binary.LittleEndian.Uint32(header[2:6]))
+	payload := make([]byte, size)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		return nil, err
+	}
+	frame := append(header, payload...)
+	return frame, nil
+}
+
 type ControllerService struct {
-	Registry *NodeRegistry
-	addr     string
+	Registry      *NodeRegistry
+	addr          string
+	sessions      map[string]*NodeSession
+	outstanding   map[uint64]string
+	backpressure  map[string]bool
+	mu            sync.Mutex
+	maxQueueDepth int
 }
 
 func NewControllerService(addr string) *ControllerService {
 	return &ControllerService{
-		Registry: NewNodeRegistry(),
-		addr:     addr,
+		Registry:      NewNodeRegistry(),
+		addr:          addr,
+		sessions:      make(map[string]*NodeSession),
+		outstanding:   make(map[uint64]string),
+		backpressure:  make(map[string]bool),
+		maxQueueDepth: 256,
 	}
+}
+
+func (c *ControllerService) dispatchTaskBatch(nodeID string, tasks []TaskPacket) error {
+	c.mu.Lock()
+	if c.backpressure[nodeID] {
+		c.mu.Unlock()
+		return fmt.Errorf("node %s saturated", nodeID)
+	}
+	c.mu.Unlock()
+
+	session, ok := c.sessions[nodeID]
+	if !ok || session == nil {
+		return fmt.Errorf("node %s is not connected", nodeID)
+	}
+	payload, err := EncodeTaskBatch(tasks)
+	if err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		c.mu.Lock()
+		c.outstanding[task.TaskID] = nodeID
+		c.mu.Unlock()
+	}
+	return session.sendFrame(MessageTypeTaskBatch, 0, payload)
+}
+
+func (c *ControllerService) markTaskResult(taskID uint64, nodeID string) {
+	c.mu.Lock()
+	delete(c.outstanding, taskID)
+	if len(c.outstanding) > c.maxQueueDepth {
+		c.backpressure[nodeID] = true
+	}
+	c.mu.Unlock()
 }
 
 func (c *ControllerService) Start() error {
@@ -25,47 +125,46 @@ func (c *ControllerService) Start() error {
 	}
 	defer listener.Close()
 
-	fmt.Printf("CrazyApp Controller started on %s\n", c.addr)
+	fmt.Printf("Nodren Controller started on %s\n", c.addr)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
-
 		go c.handleConnection(conn)
 	}
 }
 
 func (c *ControllerService) handleConnection(conn net.Conn) {
+	session := newNodeSession(conn)
+	go session.writeLoop()
 	defer conn.Close()
 
-	buf := make([]byte, 4096)
 	for {
-		if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			return
 		}
-		n, err := conn.Read(buf)
+		frameBytes, err := readFrameFromConn(conn)
 		if err != nil {
 			return
 		}
-
-		message := string(buf[:n])
-		if len(message) == 0 {
-			continue
-		}
-
-		msg, err := DecodeMessage(message)
+		frame, err := DecodeFrame(frameBytes)
 		if err != nil {
-			continue
-		}
-
-		switch msg.Type {
-		case MsgRegister:
-			info, err := ParseNodeInfo(string(msg.Payload))
-			if err != nil {
-				continue
+			if errWrite := session.sendFrame(MessageTypeError, 0, []byte("invalid frame")); errWrite != nil {
+				return
 			}
+			return
+		}
+
+		switch frame.Type {
+		case MessageTypeRegister:
+			var info NodeInfo
+			if err := json.Unmarshal(frame.Payload, &info); err != nil {
+				_ = session.sendFrame(MessageTypeError, frame.RequestID, []byte("register payload invalid"))
+				return
+			}
+			info.Status = NodeStateReady.String()
 			c.Registry.Add(&RegistryNode{
 				ID:           info.NodeID,
 				Hostname:     info.Hostname,
@@ -75,17 +174,41 @@ func (c *ControllerService) handleConnection(conn net.Conn) {
 				Architecture: info.Arch,
 				Status:       NodeStateReady,
 			})
+			c.mu.Lock()
+			c.sessions[info.NodeID] = session
+			c.mu.Unlock()
+			session.nodeID = info.NodeID
+			session.state = string(NodeStateReady)
 			fmt.Printf("[+] %s connected\n", info.NodeID)
-			fmt.Printf("%d nodes online\n", c.Registry.Count())
-			_, _ = conn.Write([]byte("REGISTER_ACK\n"))
-		case MsgHeartbeat:
-			if hb, err := ParseNodeInfo(string(msg.Payload)); err == nil {
-				c.Registry.UpdateHeartbeat(hb.NodeID)
-				_, _ = conn.Write([]byte("HEARTBEAT_ACK\n"))
+			_ = session.sendFrame(MessageTypeRegisterAck, frame.RequestID, []byte("registered"))
+			_ = session.sendFrame(MessageTypeReady, frame.RequestID+1, []byte("ready"))
+		case MessageTypeHeartbeat:
+			if session.nodeID == "" {
+				session.nodeID = string(frame.Payload)
 			}
-		case MsgDisconnect:
-			_ = conn.Write([]byte("DISCONNECT_ACK\n"))
+			c.Registry.UpdateHeartbeat(session.nodeID)
+			_ = session.sendFrame(MessageTypeHeartbeatAck, frame.RequestID, []byte("ok"))
+		case MessageTypeTaskResultBatch:
+			results, err := DecodeTaskResultBatch(frame.Payload)
+			if err != nil {
+				_ = session.sendFrame(MessageTypeError, frame.RequestID, []byte(err.Error()))
+				return
+			}
+			for _, result := range results {
+				fmt.Printf("[result] node=%s task=%d job=%s value=%d\n", result.NodeID, result.TaskID, result.JobID, result.Result)
+				c.markTaskResult(result.TaskID, result.NodeID)
+			}
+			_ = session.sendFrame(MessageTypeReady, frame.RequestID+1, []byte("ready"))
+		case MessageTypeHeartbeatAck:
+			session.state = string(NodeStateReady)
+		case MessageTypeGoodbye:
 			return
+		default:
+			_ = session.sendFrame(MessageTypeError, frame.RequestID, []byte("unsupported message type"))
 		}
 	}
+}
+
+func (n NodeState) String() string {
+	return string(n)
 }

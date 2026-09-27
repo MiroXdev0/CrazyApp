@@ -1,4 +1,4 @@
-# NEXUS Core Architecture
+# Nodren Core Architecture
 
 The core is the foundation of the ecosystem. It defines how nodes register, how jobs are scheduled, how resources are assigned, and how results are reconstructed.
 

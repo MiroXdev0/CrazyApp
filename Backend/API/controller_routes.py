@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="NEXUS Controller API")
+app = FastAPI(title="Nodren Controller API")
 
 @app.get("/status")
 def status():

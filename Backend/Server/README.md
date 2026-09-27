@@ -1,6 +1,6 @@
-# CrazyApp Controller
+# Nodren Controller
 
-This service is the control plane for the first CrazyApp prototype.
+This service is the control plane for the first Nodren prototype.
 
 It is designed to:
 - accept node connections

@@ -1,10 +1,10 @@
-# NEXUS Architecture
+# Nodren Architecture
 
 This document defines the runtime model for the distributed compute platform.
 
 ## Mission
 
-NEXUS turns multiple ordinary computers into one virtual computational machine. The system coordinates CPU, memory, GPU, networking, and scheduling across heterogeneous hardware.
+Nodren turns multiple ordinary computers into one virtual computational machine. The system coordinates CPU, memory, GPU, networking, and scheduling across heterogeneous hardware.
 
 ## Core components
 
