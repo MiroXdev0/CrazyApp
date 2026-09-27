@@ -69,6 +69,5 @@ tmp/
 *.temp
 
 # build files
-*.exe
 *.obj
 *.zip
