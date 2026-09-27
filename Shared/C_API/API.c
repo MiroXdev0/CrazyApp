@@ -1,6 +1,17 @@
-#include <stdio.h>
+#include "nodren_c_api.h"
 
-int get_status(void) {
-    printf("API status: ok\n");
-    return 0;
+int API_execute_sum(
+    void* engine,
+    uint64_t task_id,
+    const int32_t* values,
+    size_t count,
+    NodrenCoreTaskResult* out)
+{
+    return nodren_core_execute_sum(
+        engine,
+        task_id,
+        values,
+        count,
+        out
+    );
 }

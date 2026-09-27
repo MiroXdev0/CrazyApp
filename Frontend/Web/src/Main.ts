@@ -1,10 +1,12 @@
-import { connectToServer } from "./ConnectToServer";
+import "./Style.css";
+import { renderDashboard } from "./dashboard";
 
-async function main() {
-  const data = await connectToServer("/api/health");
-  console.log("Server response:", data);
+export function start(): void {
+    const app = document.getElementById("app");
+
+    if (!app) {
+        throw new Error("Missing #app element");
+    }
+
+    renderDashboard(app);
 }
-
-main().catch((error) => {
-  console.error("Failed to connect:", error);
-});

@@ -1,0 +1,71 @@
+                    ┌─────────────────┐
+                    │  Frontend/Web         │
+                    │   Browser UI          │
+                    └────────┬────────┘
+                             │ HTTP
+                             ▼
+                    ┌─────────────────┐
+                    │  Web Gateway          │
+                    │      Go               │
+                    │     :3000             │
+                    └────────┬────────┘
+                             │ TCP
+                             ▼
+                    ┌─────────────────┐
+                    │ Web Runtime           │
+                    │     Rust              │
+                    │    :9100              │
+                    └────────┬────────┘
+                             │ HTTP
+                             ▼
+                    ┌─────────────────┐
+                    │   Controller          │
+                    │      Go               │
+                    │ HTTP :8080            │
+                    │ TCP  :9000            │
+                    └────────┬────────┘
+                                │ binary protocol
+              ┌────────────┼────────────┐
+              ▼                ▼                ▼
+             Worker            Worker           Worker
+             Rust              Rust             Rust
+              │                 │                │
+              ▼                ▼                ▼
+             Native          Native            Native
+             Core            Core              Core
+             C/C++/ASM       C/C++/ASM         C/C++/ASM
+
+
+
+
+
+
+
+
+
+             JOB
+              │
+              ▼
+        Go Controller
+              │
+              ▼
+        Rust Worker
+              │
+          C ABI call
+              │
+              ▼
+        C++ Core Engine
+              │
+          ┌───┴───┐
+          ▼       ▼
+          C       ASM
+       memory   AVX2
+              │
+              ▼
+           RESULT
+              │
+              ▼
+        Rust Worker
+              │
+              ▼
+        Go Controller
