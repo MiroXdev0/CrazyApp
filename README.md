@@ -1,139 +1,141 @@
 # Nodren
 
-**Distributed computing infrastructure for turning multiple machines into one computational system.**
+**Distributed compute infrastructure for turning multiple machines into one execution platform.**
 
-Nodren is a systems project focused on distributed execution, high-performance communication, native computation, resource management, and fault-tolerant workloads.
+Nodren is a systems project for coordinating heterogeneous computers as a shared computational system. It separates orchestration, transport, native execution, low-level memory management, and developer tooling so each layer can be optimized independently.
 
-The goal is to let a controller coordinate ordinary machines as a shared compute cluster while keeping the heavy computation close to the native runtime.
+> **Status:** Active development — architecture and core runtime are still evolving.
+
+---
+
+## What is Nodren?
+
+Nodren is built around one idea:
+
+> **Take multiple ordinary machines and make them behave like one compute platform.**
+
+A controller manages the cluster and decides where work should run. Workers execute that work locally. The native core handles performance-critical computation without pushing the hot path through a high-level control layer.
+
+```text
+Client
+  │
+  ▼
+Controller
+  │
+  ├── Node Registry
+  ├── Scheduler
+  ├── Job Queue
+  ├── Health Tracking
+  └── Result Aggregation
+          │
+          ├──────────────┬──────────────┐
+          ▼              ▼              ▼
+       Worker 1       Worker 2       Worker N
+          │              │              │
+          ▼              ▼              ▼
+       Native Core   Native Core   Native Core
+          │              │              │
+          └──────────────┼──────────────┘
+                         ▼
+                  Result Assembly
+```
 
 ---
 
 ## Architecture
 
+Nodren is divided into a **control plane** and an **execution plane**.
+
+### Control Plane
+
+The control plane decides **what should happen and where it should happen**.
+
+The Go controller handles:
+
+* Node registration
+* Node health
+* Job queues
+* Resource-aware placement
+* Persistent worker sessions
+* Binary framing
+* Task/result tracking
+* Retry and requeue handling
+
+### Execution Plane
+
+Workers decide **how work is executed locally**.
+
+The Rust worker handles:
+
+* Machine/resource discovery
+* Worker registration
+* Resource validation
+* Persistent controller connections
+* Heartbeats
+* Task-batch decoding
+* Local execution
+* Result batching
+
+### Native Core
+
+The native core is deliberately separated from the controller and worker.
+
 ```text
-                           Nodren
-                              │
-              ┌───────────────┴───────────────┐
-              │                               │
-         Control Plane                    Compute Plane
-              │                               │
-             Go                              C/C++
-              │                               │
-        ┌─────┴─────┐                 ┌───────┴───────┐
-        │ Controller │                 │  Native Core  │
-        └─────┬─────┘                 └───────┬───────┘
-              │                               │
-       Persistent transport             C ABI boundary
-              │                               │
-      ┌───────┼────────┐                C / C++ / ASM
-      │       │        │
-   Node 1   Node 2   Node N
-      │       │        │
-      └───────┼────────┘
-              │
-         Task execution
+C
+│
+├── Raw virtual memory
+├── Aligned allocation
+├── Arenas
+└── Low-level ABI
+        │
+        ▼
+C++
+│
+├── Task queues
+├── Worker threads
+├── Execution engine
+└── CPU dispatch
+        │
+        ▼
+x86-64 Assembly
+│
+└── Measured CPU hot paths
 ```
 
-Nodren separates orchestration from computation:
-
-**Controller**
-Schedules work, tracks nodes, manages jobs, and coordinates execution.
-
-**Node**
-Represents a participating machine and manages communication, resources, task queues, and execution.
-
-**Core**
-Performs the computationally expensive work using native code.
-
 ---
 
-## Core principles
-
-### Distributed by design
-
-Nodren is built around multiple independent machines rather than treating distribution as an afterthought.
-
-### Native computation
-
-Heavy workloads belong in the native runtime instead of the control layer.
-
-### Persistent communication
-
-Nodes maintain long-lived connections instead of repeatedly creating processes or connections for individual tasks.
-
-### Batching
-
-Tasks and results can be grouped together to reduce communication and scheduling overhead.
-
-### Backpressure
-
-Nodes must be able to signal when they are busy or saturated so the controller does not continuously overload them.
-
-### Measured performance
-
-Performance changes are benchmarked and profiled rather than optimized based on assumptions.
-
-### Fault tolerance
-
-A failed node should not automatically mean a failed workload. Tasks must be recoverable and reschedulable.
-
----
-
-## Project structure
+## Repository Structure
 
 ```text
 Nodren/
 │
 ├── Backend/
-│   ├── Server/          # Controller and orchestration services
-│   ├── Data/            # Data and telemetry services
-│   └── API/             # External APIs
+│   ├── Controller-Go/       # Go control plane
+│   ├── Protocol/            # Backend protocol definitions
+│   ├── Web-Server/
+│   │   ├── Gateway/         # Web/API gateway
+│   │   └── Runtime/         # Rust web runtime
+│   └── Worker-Rust/         # Rust execution worker
+│
+├── CLI/
+│   └── Rust/                # Native command-line tooling
 │
 ├── Core/
-│   ├── C/               # Low-level runtime and memory primitives
-│   ├── Cpp/             # Native execution and compute engine
-│   └── Assembly/        # Architecture-specific operations
-│
-├── Systems/
-│   ├── Go/              # Distributed control plane
-│   └── Rust/            # Systems and safety-critical components
+│   ├── C/                   # Low-level memory/runtime
+│   ├── Cpp/                 # Native execution engine
+│   ├── Assembly/
+│   │   └── X64/             # x86-64 optimized kernels
+│   └── build_core.*         # Core build scripts
 │
 ├── Shared/
-│   ├── Protocol/        # Nodren protocol definitions
-│   ├── IPC/             # Inter-process communication
-│   ├── Serialization/   # Serialization infrastructure
-│   └── C_API/           # Native ABI boundaries
+│   ├── C_API/               # C ABI
+│   ├── IPC/                 # IPC definitions
+│   └── Protocol/            # Shared protocol types
 │
-├── Frontend/
-│   ├── Desktop/         # Desktop management interface
-│   └── Web/             # Web management interface
-│
-├── Python/
-│   ├── Analytics/       # Benchmark and telemetry analysis
-│   ├── AI/              # Experimental intelligent tooling
-│   ├── Tools/           # Development utilities
-│   └── Scripts/         # Automation
-│
-├── Database/
-│   ├── SQL/             # Database definitions
-│   ├── migrations/      # Schema migrations
-│   └── schemas/         # Data schemas
-│
-├── Native/
-│   ├── include/         # Native interfaces
-│   ├── lib/             # Native libraries
-│   └── bindings/        # Language bindings
-│
-├── Tests/
-│   ├── Cpp/
-│   ├── Rust/
-│   ├── CSharp/
-│   ├── Python/
-│   └── Integration/
-│
-├── docs/                # Technical documentation
-├── tools/               # Developer and benchmark tools
-├── scripts/             # Build and automation scripts
+├── Tests/                   # Integration and system tests
+├── docs/                    # Architecture and roadmap
+├── tools/                   # Benchmarks and developer tools
+├── scripts/                 # Automation
 │
 ├── .gitattributes
 ├── .gitignore
@@ -142,16 +144,18 @@ Nodren/
 
 ---
 
-## Communication model
+## Communication
 
-Nodren uses persistent sessions between the controller and nodes.
+Nodren uses persistent connections between the controller and workers instead of creating a new connection or process for every task.
+
+A simplified session looks like:
 
 ```text
 Controller
     │
     │ REGISTER
     ▼
-   Node
+  Worker
     │
     │ READY
     ▼
@@ -159,20 +163,18 @@ Controller
     │
     │ TASK_BATCH
     ▼
-   Node
+  Worker
     │
-    │ native execution
+    │ Native Execution
     ▼
-   Core
+  Core
     │
     │ TASK_RESULT_BATCH
     ▼
 Controller
 ```
 
-The protocol is designed around framed messages rather than repeatedly creating a new process or connection for every task.
-
-Typical message types include:
+The protocol includes messages such as:
 
 ```text
 HELLO
@@ -186,87 +188,300 @@ ERROR
 GOODBYE
 ```
 
-Each task carries identifiers that allow results to be matched independently of execution order.
+Tasks contain identifiers so results can be associated with their original jobs independently of execution order.
 
 ---
 
-## High-performance runtime
+## Language Roles
 
-The performance architecture is split between the control plane and compute plane.
+Nodren intentionally uses different languages for different layers.
 
-### Go
+| Language            | Responsibility                                      |
+| ------------------- | --------------------------------------------------- |
+| **Go**              | Controller, orchestration, scheduling and transport |
+| **Rust**            | Worker runtime and systems components               |
+| **C++**             | Native execution, task queues and worker pools      |
+| **C**               | Memory primitives and stable native ABI             |
+| **x86-64 Assembly** | Measured CPU hot paths                              |
+| **Python**          | Testing, analysis, automation and tooling           |
+| **C#**              | Management/desktop tooling where applicable         |
 
-Used for:
+The goal is not to use many languages simply for the sake of using them.
 
-* controller services
-* node communication
-* persistent connections
-* task dispatch
-* batching
-* backpressure
-* scheduling infrastructure
-* telemetry
-
-### C++
-
-Used for:
-
-* task execution
-* native worker pools
-* compute-heavy algorithms
-* memory-efficient data structures
-* performance-critical paths
-
-### C
-
-Used for low-level native interfaces and memory/runtime primitives.
-
-### Rust
-
-Used where stronger memory and concurrency guarantees are useful at the systems layer.
-
-### Assembly
-
-Reserved for architecture-specific operations where low-level CPU instructions provide a measurable benefit.
-
-### Python
-
-Used for:
-
-* automation
-* analysis
-* benchmark tooling
-* experimentation
-* development utilities
-
-### C#
-
-Used for desktop tooling and management interfaces.
+Each language has a defined boundary and responsibility.
 
 ---
 
-## Performance engineering
+# Native Core
 
-Nodren contains dedicated benchmarks instead of relying on assumptions about performance.
+The native core contains three major layers.
 
-The benchmark infrastructure measures things such as:
+## C
+
+The C layer provides low-level primitives:
+
+* Virtual-memory-backed allocation
+* Aligned allocation
+* Bump arenas
+* Atomic memory statistics
+* Stable C ABI
+
+The execution path is designed to avoid allocating memory for every task.
+
+## C++
+
+The C++ layer owns:
+
+* Native task execution
+* Bounded task transport
+* Worker threads
+* CPU feature dispatch
+* C ABI integration
+
+The hot path uses POD task descriptors and avoids unnecessary:
+
+* `std::function`
+* JSON
+* Per-task heap allocation
+* Process creation
+
+## Assembly
+
+Assembly is reserved for CPU hot paths where profiling shows that it is justified.
+
+The current x86-64 implementation contains an AVX2 reduction kernel.
+
+Runtime dispatch determines whether the CPU supports the optimized implementation.
+
+---
+
+# Backend
+
+The backend architecture is:
 
 ```text
-total execution time
-tasks per second
-operations per second
-queue wait
-transport overhead
-IPC overhead
-native computation time
-result collection
-latency
-CPU utilization
-memory usage
-scaling efficiency
+                 HTTP / JSON
+Web / Desktop ────────────────> Go Controller
+                                   │
+                                   │ Persistent TCP
+                                   │ Binary Protocol
+                                   ▼
+                               Rust Worker
+                                   │
+                                   ▼
+                             Local Execution
 ```
 
-Configurations can be compared using:
+## Go Controller
+
+Location:
+
+```text
+Backend/Controller-Go
+```
+
+Run tests:
+
+```bash
+cd Backend/Controller-Go
+go test ./...
+```
+
+Run the controller:
+
+```bash
+go run .
+```
+
+Default addresses:
+
+```text
+Node TCP:  :9000
+HTTP API:  :8080
+```
+
+Environment variables:
+
+```text
+NODREN_NODE_ADDR
+NODREN_HTTP_ADDR
+```
+
+---
+
+## Rust Worker
+
+Location:
+
+```text
+Backend/Worker-Rust
+```
+
+Run:
+
+```bash
+cd Backend/Worker-Rust
+cargo run -- --controller=127.0.0.1:9000
+```
+
+Available options include:
+
+```text
+--id=<node-id>
+--controller=<host:port>
+--ram-gb=<value>
+--gpu-vendor=<vendor>
+--gpu-model=<model>
+--gpu-vram-gb=<value>
+```
+
+The worker is responsible for validating resources, maintaining its controller connection, receiving work, executing tasks, and returning results.
+
+---
+
+# Example Job
+
+A job can be submitted through the controller API.
+
+```http
+POST /v1/jobs
+Content-Type: application/json
+
+{
+  "command": "sum",
+  "priority": 50,
+  "requirements": {
+    "cpu_cores": 1,
+    "ram_gb": 1,
+    "gpu_required": false
+  },
+  "payload_base64": "AQIDBAU="
+}
+```
+
+The execution flow is:
+
+```text
+HTTP Request
+     │
+     ▼
+Controller
+     │
+     ▼
+Scheduler
+     │
+     ▼
+Worker
+     │
+     ▼
+Native Runtime
+     │
+     ▼
+Result
+     │
+     ▼
+Controller
+```
+
+The native C/C++ layer can be connected behind the worker through the C ABI.
+
+---
+
+# Scheduling
+
+Workers report information about their available resources.
+
+Examples include:
+
+```text
+CPU cores
+RAM
+GPU vendor
+GPU model
+GPU VRAM
+Architecture
+Operating system
+Network address
+Current availability
+Current workload
+```
+
+The scheduler can use these values together with:
+
+```text
+Job priority
+Resource requirements
+Queue length
+Current load
+Architecture compatibility
+Worker availability
+```
+
+Planned scheduling strategies include:
+
+```text
+Round Robin
+Highest Capacity
+Priority First
+Affinity Based
+Resource Aware
+```
+
+---
+
+# Fault Tolerance
+
+Distributed systems fail.
+
+Nodren is designed around that assumption.
+
+Potential failure conditions include:
+
+```text
+Worker crash
+Network partition
+Timeout
+Resource exhaustion
+Partial result loss
+Corrupted output
+Worker overload
+```
+
+Possible recovery mechanisms include:
+
+```text
+Retry
+Requeue
+Failover
+Checkpoint restore
+```
+
+A failed worker should not automatically require the entire workload to be discarded.
+
+---
+
+# Performance
+
+Nodren treats performance as something that must be **measured**.
+
+The repository contains benchmarking and diagnostic tooling for measuring:
+
+```text
+Execution time
+Tasks / second
+Operations / second
+Queue wait
+Transport overhead
+IPC overhead
+Native execution time
+Result collection time
+Latency
+CPU utilization
+Memory usage
+Scaling efficiency
+```
+
+Scaling experiments can compare configurations such as:
 
 ```text
 1 node
@@ -275,183 +490,265 @@ Configurations can be compared using:
 8 nodes
 ```
 
-and different native worker counts.
+while keeping the workload consistent.
 
-The benchmark is designed to keep workload size and computation identical between configurations so that scaling results are comparable.
+The same principle applies to the native runtime.
 
----
-
-## Error handling
-
-Errors are treated as part of the system architecture rather than plain log messages.
-
-The error subsystem is designed to carry information such as:
-
-```text
-error code
-component
-severity
-message
-node ID
-job ID
-task ID
-timestamp
-recoverability
-```
-
-Errors can originate from:
-
-```text
-networking
-protocol
-nodes
-jobs
-tasks
-resources
-memory
-native execution
-```
-
-Recoverable failures can be retried or rescheduled while unrecoverable failures can terminate the affected task or job.
+Low-level optimizations should be supported by profiling or benchmarks rather than assumptions.
 
 ---
 
-## Distributed execution
+# Error Model
 
-A future complete workload looks like:
+Errors are represented as structured system events.
+
+An error can contain:
 
 ```text
-User
- │
- ▼
-Controller
- │
- ├── split workload
- ├── inspect resources
- ├── schedule tasks
- └── distribute work
-        │
-        ├─────────────┬─────────────┐
-        ▼             ▼             ▼
-      Node 1        Node 2        Node 3
-        │             │             │
-      Core          Core          Core
-        │             │             │
-        └─────────────┼─────────────┘
-                      ▼
-                Result assembly
-                      │
-                      ▼
-                    User
+Error code
+Component
+Severity
+Message
+Node ID
+Job ID
+Task ID
+Timestamp
+Recoverability
 ```
 
-The long-term objective is for Nodren to handle the full lifecycle:
+Potential sources include:
 
 ```text
-submit
-  ↓
-queue
-  ↓
-split
-  ↓
-schedule
-  ↓
-execute
-  ↓
-collect
-  ↓
-reconstruct
-  ↓
-complete
-```
-
-while remaining able to recover from node and task failures.
-
----
-
-## Current development state
-
-Nodren is currently in active systems-development.
-
-Implemented work includes:
-
-* controller/node architecture
-* node registration and communication
-* native compute components
-* structured error handling
-* performance benchmarking
-* persistent transport infrastructure
-* framed binary transport
-* batched result handling
-* performance diagnostics
-* same-machine scaling tests
-
-Work still being developed includes:
-
-* full distributed job scheduling
-* production task batching
-* resource-aware scheduling
-* fault recovery and task rescheduling
-* multi-machine execution
-* runtime isolation
-* advanced workload management
-* production-grade observability
-
----
-
-## Development philosophy
-
-Nodren is intentionally built from multiple layers rather than one large runtime.
-
-The architecture follows:
-
-```text
-Go
- ↓
-Transport / orchestration
- ↓
-C ABI
- ↓
-C/C++
- ↓
+Networking
+Protocol
+Nodes
+Jobs
+Tasks
+Resources
+Memory
 Native execution
- ↓
-CPU / memory
 ```
 
-Every layer should have a defined responsibility.
+Recoverable failures can be retried or rescheduled.
 
-Performance improvements should be supported by measurements.
-
-Correctness should be tested before optimization.
-
-Distributed behavior should be tested under failure, not only under ideal conditions.
+Unrecoverable failures can terminate the affected task or job.
 
 ---
 
-## Building
+# Development Status
 
-Nodren is currently under active development, so build commands vary by subsystem.
+Nodren is currently under active systems development.
 
-Typical development tools include:
+### Implemented / In Progress
+
+* Controller/worker architecture
+* Node registration
+* Persistent communication
+* Framed binary transport
+* Task batching
+* Result batching
+* Native C/C++ execution components
+* Low-level memory primitives
+* x86-64 CPU kernels
+* Structured error handling
+* Benchmark tooling
+* Integration tests
+
+### Still Being Developed
+
+* Complete distributed scheduling
+* Production resource management
+* Multi-machine execution
+* Task isolation
+* Sandboxing
+* Distributed storage
+* Checkpointing
+* Distributed memory
+* Advanced observability
+* SDK
+* Higher-level workload APIs
+* Production deployment tooling
+
+---
+
+# Roadmap
+
+## Phase 1 — Foundation
+
+* Node registration
+* Worker heartbeat
+* Job submission
+* Result collection
+* Controller/worker API
+
+## Phase 2 — Scheduling
+
+* Resource-aware placement
+* Priority scheduling
+* Retry logic
+* Worker failure handling
+
+## Phase 3 — Storage & Memory
+
+* Job staging
+* Result storage
+* Checkpointing
+* Distributed memory regions
+
+## Phase 4 — Observability
+
+* Cluster metrics
+* Node health
+* Logs
+* Dashboards
+
+## Phase 5 — Platform
+
+* Sandboxing
+* Workload isolation
+* Security boundaries
+* Remote deployment
+
+## Phase 6 — Developer Ecosystem
+
+* CLI
+* SDK
+* Plugin interfaces
+* Automation workflows
+
+---
+
+# Design Principles
+
+## Separate orchestration from computation
+
+The controller should coordinate work rather than perform expensive computation itself.
+
+## Keep the hot path native
+
+High-frequency computation should not depend on JSON, unnecessary process creation, or high-level allocation patterns.
+
+## Persistent communication
+
+Workers maintain long-lived sessions with the controller.
+
+## Batch work
+
+Batching reduces communication and scheduling overhead.
+
+## Backpressure
+
+Workers should be able to communicate capacity and saturation instead of being continuously overloaded.
+
+## Measure before optimizing
+
+Performance changes should be supported by benchmarks or profiling.
+
+## Test failure
+
+A distributed system should be tested under failures, not only when every machine is healthy.
+
+## Explicit boundaries
+
+Each language and subsystem should have a defined responsibility and communication boundary.
+
+---
+
+# Documentation
+
+Additional documentation:
+
+* [Architecture](docs/architecture.md)
+* [Core Architecture](docs/core-architecture.md)
+* [Roadmap](docs/roadmap.md)
+* [Backend](Backend/README.md)
+* [Native Core](Core/README.md)
+* [C Layer](Core/C/README.md)
+* [C++ Layer](Core/Cpp/README.md)
+* [x86-64 Assembly](Core/Assembly/X64/README.md)
+
+---
+
+# Building
+
+Nodren currently consists of several independently buildable subsystems.
+
+## Go Controller
 
 ```bash
+cd Backend/Controller-Go
 go test ./...
+go run .
 ```
 
-and native C++ builds using the project's configured compiler/toolchain.
+## Rust Worker
 
-Generated binaries and intermediate build artifacts should not be committed to the repository.
+```bash
+cd Backend/Worker-Rust
+cargo build
+cargo test
+```
+
+## Native Core — Windows
+
+```powershell
+cd Core
+./build_core.ps1
+```
+
+## Native Core — Linux
+
+```bash
+cd Core
+./build_core.sh
+```
+
+Build requirements may change while Nodren is under active development.
+
+Generated binaries and build directories should not be committed to the source repository.
 
 ---
 
-## License
+# Long-Term Goal
+
+The long-term goal is to turn Nodren into a general-purpose compute fabric.
+
+The intended workload lifecycle is:
+
+```text
+Submit
+  ↓
+Queue
+  ↓
+Inspect Resources
+  ↓
+Partition
+  ↓
+Schedule
+  ↓
+Execute
+  ↓
+Collect
+  ↓
+Reconstruct
+  ↓
+Complete
+```
+
+The system should eventually support heterogeneous hardware, failure recovery, efficient data movement, native execution, distributed memory, and large-scale workload management.
+
+---
+
+# License
 
 See [LICENSE](LICENSE).
 
 ---
 
-## Project
+# Nodren
 
-**Nodren**
-Distributed computing infrastructure built around Go, C, C++, Rust, Python, and native systems programming.
+**Distributed computing infrastructure built around Go, Rust, C, C++, x86-64 Assembly, and systems programming.**
+
+Repository:
+
+https://github.com/MiroXdev0/Nodren
