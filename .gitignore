@@ -70,3 +70,5 @@ tmp/
 
 # build files
 *.exe
+*.obj
+*.zip
