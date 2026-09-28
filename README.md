@@ -1,5 +1,16 @@
 # Nodren
 
+# Nodren
+
+> **Distributed computing, built for performance.**
+
+> [!WARNING]
+> 🚧 **v0.1.0-pre.1 — PRE-RELEASE**
+>
+> Nodren is experimental software. APIs and features may change before the first stable release.
+>
+> **[View Release →](../../releases/tag/v0.1.0-pre.1)**
+
 **Distributed compute infrastructure for turning multiple machines into one execution platform.**
 
 Nodren is a systems project for coordinating heterogeneous computers as a shared computational system. It separates orchestration, transport, native execution, low-level memory management, and developer tooling so each layer can be optimized independently.
