@@ -2,9 +2,9 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using Avalonia.Controls;
 using Avalonia.Controls.Templates;
-using Nodren.Desktop.ViewModels;
+using App.ViewModels;
 
-namespace Nodren.Desktop;
+namespace App;
 
 /// <summary>
 /// Resolves a view for a given view model.

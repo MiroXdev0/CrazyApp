@@ -4,7 +4,100 @@
 
 Nodren is a systems project for coordinating heterogeneous computers as a shared computational system. It separates orchestration, transport, native execution, low-level memory management, and developer tooling so each layer can be optimized independently.
 
-> **Status:** Active development — architecture and core runtime are still evolving.
+> **Status:** Pre-release runtime — the Controller, worker, and desktop dashboard deployment path is implemented, but physical multi-machine validation is still required before production use.
+
+## Pre-release runtime
+
+The supported Windows deployment consists of three executables plus the native Core library:
+
+```text
+nodren.exe          Main Controller, scheduler, HTTP API, and CLI commands
+nodren-worker.exe   Standalone worker runtime
+nodren-ui.exe       Avalonia desktop dashboard and workload client
+nodren_core.dll     Native Core loaded by the worker on Windows
+```
+
+Build them with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
+```
+
+The release directory contains only the runtime artifacts required by the
+three processes. The Controller does not require the Rust CLI executable at
+runtime; its user-facing commands use the same API behavior directly.
+
+Start the main machine:
+
+```text
+nodren.exe
+```
+
+The Controller worker TCP listener defaults to `:9000` and its HTTP API to
+`:8080`. Bind them explicitly when the machine has multiple interfaces:
+
+```powershell
+$env:NODREN_NODE_ADDR = "192.168.10.1:9000"
+$env:NODREN_HTTP_ADDR = "192.168.10.1:8080"
+.\release\nodren.exe
+```
+
+On another machine, start the standalone worker:
+
+```text
+nodren-worker.exe --controller 192.168.10.1:9000
+```
+
+The worker also accepts `--controller=<host:port>`, `--id`, `--cpu-cores`,
+and `--ram-gb`. `NODREN_CONTROLLER_ADDR` and `NODREN_WORKER_ID` are available
+as environment fallbacks. Ethernet, Wi-Fi, LAN, and a direct Ethernet cable
+all use the same normal IP/TCP transport; no special cable protocol is used.
+
+The required firewall path is TCP port `9000` from workers to the Controller.
+Port `8080` is the HTTP API used by CLI commands and is only required by
+clients that query the Controller API. Nodren does not modify the firewall.
+
+CLI examples, run while the main Controller is active:
+
+```text
+nodren.exe status
+nodren.exe devices
+nodren.exe jobs
+nodren.exe run sum 1 2 3 4 5
+nodren.exe run xor 1 2 3
+nodren.exe run dot_product 1,2,3 4,5,6
+```
+
+Use `NODREN_CONTROLLER_URL` to point CLI commands at a non-local HTTP API.
+
+Start the desktop dashboard with `nodren-ui.exe`. It is a frontend for the
+Controller HTTP API: it polls health, worker, and job endpoints, submits
+`sum`, `xor`, and `dot_product` jobs, and does not start or duplicate backend
+processes or native computation. Configure its endpoint in Settings or with
+`NODREN_CONTROLLER_URL`. The non-GUI release check is `nodren-ui.exe
+--self-test` while a Controller and worker are running.
+
+Partitionable workloads are automatically split by the Controller once they
+exceed 64 units. Current `sum`, `xor`, and `dot_product` workloads use
+workload-specific partitioners and reducers, with dynamic capacity-aware
+assignment across workers. Small workloads stay as one task; manual worker
+percentages are available through the HTTP API and the UI's Advanced
+Distribution control.
+
+For a real two-machine smoke test, copy the release directory to the worker
+machine and run this there, replacing both addresses with the Controller's
+LAN address:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Tests\Integration\remote_network.ps1 `
+  -Controller 192.168.10.1:9000 `
+  -HttpController http://192.168.10.1:8080
+```
+
+That test covers remote registration, a workload, worker loss, reconnect, and
+a second workload. It uses normal TCP/IP networking for Ethernet, Wi-Fi, LAN,
+or a direct Ethernet link. It does not configure Windows Firewall; allow TCP
+port `9000` to the Controller and TCP port `8080` for API clients as needed.
 
 ---
 
@@ -127,12 +220,8 @@ Nodren/
 │   │   └── X64/             # x86-64 optimized kernels
 │   └── build_core.*         # Core build scripts
 │
-├── Shared/
-│   ├── C_API/               # C ABI
-│   ├── IPC/                 # IPC definitions
-│   └── Protocol/            # Shared protocol types
-│
 ├── Tests/                   # Integration and system tests
+├── Frontend/Desktop/App/    # Avalonia desktop dashboard
 ├── docs/                    # Architecture and roadmap
 ├── tools/                   # Benchmarks and developer tools
 ├── scripts/                 # Automation
@@ -383,7 +472,16 @@ Result
 Controller
 ```
 
-The native C/C++ layer can be connected behind the worker through the C ABI.
+The Rust worker invokes a native workload dispatcher through the C ABI. The
+current workloads are `sum`, `xor`, and `dot_product`; the first two use the
+existing byte-reduction convention, while `dot_product` uses a binary vector
+payload. Unsupported or malformed workloads return failed results without
+poisoning the worker session. Python is used only by the external integration
+test:
+
+```bash
+python Tests/Integration/cluster_test.py
+```
 
 ---
 

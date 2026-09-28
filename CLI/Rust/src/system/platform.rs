@@ -65,9 +65,5 @@ pub fn identifier() -> &'static str {
 
 /// Returns a human-readable platform summary.
 pub fn summary() -> String {
-    format!(
-        "{} ({})",
-        name(),
-        architecture()
-    )
+    format!("{} ({})", name(), architecture())
 }

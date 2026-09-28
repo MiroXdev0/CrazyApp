@@ -1,7 +1,9 @@
 #include "../include/nodren_c_api.h"
 #include "../include/core_engine.hpp"
+#include "../include/workload_dispatch.hpp"
 
 #include <new>
+#include <string_view>
 
 extern "C" {
 
@@ -66,6 +68,39 @@ int nodren_core_execute_sum(
     out->value = result.value;
     out->state = static_cast<int>(result.state);
     return result.state == nodren::TaskState::Completed ? 0 : -1;
+}
+
+int nodren_core_execute_workload(
+    void* engine,
+    uint64_t task_id,
+    const char* command,
+    const uint8_t* payload,
+    size_t payload_size,
+    NodrenCoreWorkloadResult* out) {
+    if (!out) return -1;
+    out->task_id = task_id;
+    out->value = 0;
+    out->state = static_cast<int>(nodren::TaskState::Failed);
+    out->error_code = NODREN_CORE_ERROR_INVALID_ARGUMENT;
+    if (!engine || !command) return -1;
+
+    nodren::WorkloadResult result{};
+    try {
+        result = nodren::dispatch_workload(
+            *static_cast<nodren::CoreEngine*>(engine),
+            task_id,
+            std::string_view(command),
+            payload,
+            payload_size);
+    } catch (...) {
+        out->error_code = NODREN_CORE_ERROR_INTERNAL;
+        return -1;
+    }
+    out->task_id = result.task.id;
+    out->value = result.task.value;
+    out->state = static_cast<int>(result.task.state);
+    out->error_code = static_cast<int>(result.error);
+    return result.task.state == nodren::TaskState::Completed ? 0 : -1;
 }
 
 void nodren_core_wait_idle(void* engine) {

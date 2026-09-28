@@ -1,22 +1,197 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:App.ViewModels"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="450"
         x:Class="App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Icon="/Assets/avalonia-logo.ico"
-        Title="App">
-
+        Width="1100"
+        Height="760"
+        MinWidth="900"
+        MinHeight="600"
+        Background="#10151D"
+        Title="Nodren">
     <Design.DataContext>
-        <!-- This only sets the DataContext for the previewer in an IDE,
-             to set the actual DataContext for runtime, set the DataContext property in code (look at App.axaml.cs) -->
         <vm:MainViewModel />
     </Design.DataContext>
 
-    <TextBox Text="{Binding Greeting}"
-             HorizontalAlignment="Center"
-             VerticalAlignment="Center" />
+    <Grid RowDefinitions="Auto,*" Margin="24">
+        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+            <StackPanel>
+                <TextBlock FontSize="28" FontWeight="SemiBold" Foreground="#F4F7FB" Text="Nodren" />
+                <TextBlock Margin="0,4,0,0" Foreground="#9AA7B8" Text="Native workload cluster dashboard" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                <TextBlock HorizontalAlignment="Right" FontSize="15" FontWeight="SemiBold" Text="{Binding ControllerStatus}" />
+                <TextBlock HorizontalAlignment="Right" Margin="0,4,0,0" Foreground="#9AA7B8" Text="{Binding LastUpdated}" />
+            </StackPanel>
+        </Grid>
 
+        <TabControl Grid.Row="1">
+            <TabItem Header="Dashboard">
+                <ScrollViewer Padding="0,18,0,0">
+                    <StackPanel Spacing="16">
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                            <Border Padding="18" Background="#192331" CornerRadius="8">
+                                <StackPanel>
+                                    <TextBlock Foreground="#9AA7B8" Text="Workers" />
+                                    <TextBlock Margin="0,8,0,0" FontSize="24" Text="{Binding Workers.Count}" />
+                                    <TextBlock Margin="0,8,0,0" Foreground="#B5C2D2" Text="{Binding WorkerSummary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
+                                <StackPanel>
+                                    <TextBlock Foreground="#9AA7B8" Text="Jobs" />
+                                    <TextBlock Margin="0,8,0,0" FontSize="24" Text="{Binding Jobs.Count}" />
+                                    <TextBlock Margin="0,8,0,0" Foreground="#B5C2D2" Text="{Binding JobSummary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                        <Border Padding="18" Background="#192331" CornerRadius="8">
+                            <StackPanel Spacing="8">
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Controller" />
+                                <TextBlock Foreground="#B5C2D2" Text="{Binding ControllerUrl}" />
+                                <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                                <Button HorizontalAlignment="Left" Padding="18,8" Command="{Binding RefreshCommand}" Content="Refresh now" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Workers">
+                <ScrollViewer Padding="0,18,0,0">
+                    <ItemsControl ItemsSource="{Binding Workers}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Margin="0,0,0,10" Padding="16" Background="#192331" CornerRadius="8">
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <StackPanel>
+                                            <TextBlock FontSize="17" FontWeight="SemiBold" Text="{Binding Info.Id}" />
+                                            <TextBlock Margin="0,5,0,0" Foreground="#B5C2D2" Text="{Binding State}" />
+                                            <TextBlock Margin="0,8,0,0" Foreground="#9AA7B8" Text="{Binding Info.Os}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right">
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                                <TextBlock Text="CPU " />
+                                                <TextBlock Text="{Binding Info.CpuCores}" />
+                                                <TextBlock Text=" cores" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                                                <TextBlock Text="RAM " />
+                                                <TextBlock Text="{Binding Info.RamGb}" />
+                                                <TextBlock Text=" GB" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                                                <TextBlock Foreground="#9AA7B8" Text="Available: " />
+                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AvailableCpuCores}" />
+                                                <TextBlock Foreground="#9AA7B8" Text=" CPU · " />
+                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AvailableRamGb}" />
+                                                <TextBlock Foreground="#9AA7B8" Text=" GB" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                                                <TextBlock Foreground="#9AA7B8" Text="Capacity estimate: " />
+                                                <TextBlock Foreground="#9AA7B8" Text="{Binding CapacityScore, StringFormat={}{0:0.00}}" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
+                                                <TextBlock Foreground="#9AA7B8" Text="Allocated: " />
+                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AllocatedCpuCores}" />
+                                                <TextBlock Foreground="#9AA7B8" Text=" CPU · " />
+                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AllocatedRamGb}" />
+                                                <TextBlock Foreground="#9AA7B8" Text=" GB" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Jobs">
+                <Grid ColumnDefinitions="2*,3*" ColumnSpacing="16" Margin="0,18,0,0">
+                    <Border Padding="10" Background="#192331" CornerRadius="8">
+                        <ListBox ItemsSource="{Binding Jobs}" SelectedItem="{Binding SelectedJob}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="6" Spacing="3">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding Command}" />
+                                            <TextBlock FontWeight="SemiBold" Text="{Binding Status}" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Spacing="4">
+                                            <TextBlock Foreground="#9AA7B8" Text="{Binding Id}" />
+                                            <TextBlock Foreground="#9AA7B8" Text="worker" />
+                                            <TextBlock Foreground="#9AA7B8" Text="{Binding NodeId}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+                    <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
+                        <ScrollViewer>
+                            <TextBlock Foreground="#D7E0EB" Text="{Binding JobDetails}" TextWrapping="Wrap" />
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Run">
+                <ScrollViewer Padding="0,18,0,0">
+                    <StackPanel MaxWidth="720" Spacing="12">
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="Run workload" />
+                        <TextBlock Foreground="#9AA7B8" Text="The UI submits jobs through the Controller HTTP API. Workers execute the native workload." TextWrapping="Wrap" />
+                        <TextBlock Margin="0,8,0,0" Text="Workload" />
+                        <ComboBox ItemsSource="{Binding Workloads}" SelectedItem="{Binding SelectedWorkload}" />
+                        <TextBlock Margin="0,8,0,0" Text="Work distribution" />
+                        <StackPanel Orientation="Horizontal" Spacing="16">
+                            <RadioButton GroupName="DistributionMode" Content="Automatic" IsChecked="{Binding IsAutomaticDistribution}" />
+                            <RadioButton GroupName="DistributionMode" Content="Manual" IsChecked="{Binding IsManualDistribution}" />
+                        </StackPanel>
+                        <TextBlock Foreground="#9AA7B8" Text="{Binding DistributionSummary}" TextWrapping="Wrap" />
+                        <CheckBox Content="Advanced Distribution" IsChecked="{Binding IsAdvancedDistributionOpen}" />
+                        <Border IsVisible="{Binding IsAdvancedDistributionOpen}" Padding="12" Background="#192331" CornerRadius="8">
+                            <StackPanel Spacing="8">
+                                <TextBlock FontWeight="SemiBold" Text="Manual allocation" />
+                                <TextBlock Foreground="#9AA7B8" Text="Enter worker-id=percent entries separated by commas. The total must be 100%." TextWrapping="Wrap" />
+                                <TextBox Text="{Binding ManualAllocationText}" PlaceholderText="worker-a=60,worker-b=40" />
+                                <TextBlock Foreground="#9AA7B8" Text="Manual values are used only when Manual is selected." TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <TextBlock Text="Arguments for sum / xor" />
+                        <TextBox Text="{Binding Arguments}" PlaceholderText="1 2 3 4 5" />
+                        <TextBlock Text="Left vector for dot_product" />
+                        <TextBox Text="{Binding LeftVector}" PlaceholderText="1,2,3" />
+                        <TextBlock Text="Right vector for dot_product" />
+                        <TextBox Text="{Binding RightVector}" PlaceholderText="4,5,6" />
+                        <Button HorizontalAlignment="Left" Padding="22,10" Command="{Binding RunWorkloadCommand}" Content="Submit workload" />
+                        <Border Padding="14" Background="#192331" CornerRadius="8">
+                            <StackPanel Spacing="6">
+                                <TextBlock Text="{Binding RunStatus}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9FE3B1" Text="{Binding RunResult}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <TabItem Header="Settings">
+                <Border Padding="0,18,0,0">
+                    <StackPanel MaxWidth="720" Spacing="12">
+                    <TextBlock FontSize="20" FontWeight="SemiBold" Text="Settings" />
+                    <TextBlock Foreground="#9AA7B8" Text="Configure the Controller HTTP endpoint. The UI does not start or stop backend processes." TextWrapping="Wrap" />
+                    <TextBlock Margin="0,8,0,0" Text="Controller URL" />
+                    <TextBox Text="{Binding ControllerUrl}" PlaceholderText="http://127.0.0.1:8080" />
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Padding="18,8" Command="{Binding TestConnectionCommand}" Content="Save and test" />
+                        <Button Padding="18,8" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                    </StackPanel>
+                    <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                    <TextBlock Margin="0,22,0,0" Foreground="#9AA7B8" Text="Nodren UI 0.2.0" />
+                    </StackPanel>
+                </Border>
+            </TabItem>
+        </TabControl>
+    </Grid>
 </Window>

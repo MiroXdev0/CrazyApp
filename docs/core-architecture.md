@@ -9,7 +9,7 @@ The core is the foundation of the ecosystem. It defines how nodes register, how 
 - Fault tolerant execution
 - Heterogeneous hardware support
 - Separate control plane from execution plane
-- Shared contracts across languages
+- Explicit contracts across languages
 
 ## 2. Control plane
 
@@ -21,7 +21,7 @@ Components:
 - job queue
 - health monitor
 - result aggregator
-- config manager
+- environment/argument configuration
 
 Responsibilities:
 - register workers
@@ -37,10 +37,10 @@ The execution plane runs actual work on worker nodes.
 
 Components:
 - worker runtime
-- process launcher
-- resource limiter
-- sandbox boundary
-- output collector
+- bounded task executor
+- resource gate
+- native Core dispatcher
+- result transmitter
 
 Responsibilities:
 - run commands
@@ -74,17 +74,15 @@ A job should be represented as a rich object:
 ```json
 {
   "id": "JOB-1847",
-  "name": "simulation",
-  "priority": 5,
-  "status": "queued",
-  "target": {
-    "cpu_cores": 4,
-    "ram_gb": 8,
+  "command": "sum",
+  "priority": 50,
+  "status": "QUEUED",
+  "requirements": {
+    "cpu_cores": 1,
+    "ram_gb": 1,
     "gpu_required": false
   },
-  "command": "simulation.exe",
-  "input": "./input/data.bin",
-  "timeout_ms": 60000
+  "payload_base64": "AQIDBAU="
 }
 ```
 
@@ -108,11 +106,8 @@ The scheduler evaluates:
 
 ## 7. Scheduling policy
 
-At minimum, support:
-- round robin
-- highest-capacity-first
-- priority-first
-- affinity-first
+The current scheduler uses priority order and deterministic best-fit placement
+by remaining CPU/RAM slack, with worker ID as the final tie-breaker.
 
 Future policies:
 - predictive scheduling
@@ -139,15 +134,13 @@ Recovery behaviors:
 ## 9. Protocol design
 
 The protocol should be small and explicit:
-- register_node
-- heartbeat
-- job_submit
-- job_accept
-- job_start
-- job_progress
-- job_complete
-- job_failed
-- result_upload
+- `REGISTER`
+- `READY`
+- `TASK_BATCH`
+- `TASK_RESULT_BATCH`
+- `HEARTBEAT` and `HEARTBEAT_ACK`
+- `ERROR`
+- `GOODBYE`
 
 ## 10. Data flow
 
@@ -162,11 +155,10 @@ controller -> result storage
 ## 11. Ecosystem dependency
 
 The core is the root platform. Everything else depends on it:
-- web dashboard
-- desktop tools
-- analytics package
-- AI layer
-- SDK and developer tooling
-- deployment automation
+- optional web/desktop tools
+- analytics and AI experiments
+- future SDK and deployment automation
+
+These are not required by the pre-release Controller/Worker runtime.
 
 The ecosystem grows from the core, not the other way around.

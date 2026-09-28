@@ -20,6 +20,7 @@ obj/
 [Bb]uild/
 Debug/
 Release/
+release/
 artifacts/
 TestResults/
 *.log
@@ -71,3 +72,4 @@ tmp/
 # build files
 *.obj
 *.zip
+target/

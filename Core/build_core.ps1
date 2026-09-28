@@ -33,6 +33,11 @@ g++ -std=c++20 -O3 -DNDEBUG `
     -c "$root\Cpp\src\nodren_c_api.cpp" `
     -o "$build\nodren_c_api.o"
 
+g++ -std=c++20 -O3 -DNDEBUG `
+    -I"$root\C\include" -I"$root\Cpp\include" `
+    -c "$root\Cpp\src\workload_dispatch.cpp" `
+    -o "$build\workload_dispatch.o"
+
 g++ -c -O3 "$root\Assembly\X64\Windows\sum_avx2.S" `
     -o "$build\sum_avx2.o"
 
@@ -44,6 +49,7 @@ g++ -std=c++20 -O3 -DNDEBUG `
     "$build\thread_pool.o" `
     "$build\core_engine.o" `
     "$build\nodren_c_api.o" `
+    "$build\workload_dispatch.o" `
     "$build\sum_avx2.o" `
     -o "$out"
 
@@ -59,6 +65,7 @@ g++ -std=c++20 -O3 -DNDEBUG `
     "$build\thread_pool.o" `
     "$build\core_engine.o" `
     "$build\nodren_c_api.o" `
+    "$build\workload_dispatch.o" `
     "$build\sum_avx2.o" `
     -o "$build\nodren_core_selftest.exe"
 

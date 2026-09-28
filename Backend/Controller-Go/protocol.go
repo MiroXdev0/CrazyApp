@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	protocolMagic   uint32 = 0x4E44524E // "NDRN"
+	// Little-endian encoding of the ASCII bytes "NDRN".
+	protocolMagic   uint32 = 0x4E52444E
 	protocolVersion uint16 = 1
 	frameHeaderSize        = 20
 	maxFrameSize    uint32 = 16 << 20
@@ -34,25 +35,25 @@ const (
 )
 
 type ResourceRequirements struct {
-	CPUCores    uint32
-	RAMGB       uint64
-	GPURequired bool
+	CPUCores    uint32 `json:"cpu_cores"`
+	RAMGB       uint64 `json:"ram_gb"`
+	GPURequired bool   `json:"gpu_required"`
 }
 
 type GPUInfo struct {
-	Vendor string
-	Model  string
-	VRAMGB uint64
+	Vendor string `json:"vendor"`
+	Model  string `json:"model"`
+	VRAMGB uint64 `json:"vram_gb"`
 }
 
 type NodeInfo struct {
-	ID       string
-	Hostname string
-	OS       string
-	Arch     string
-	CPUCores uint32
-	RAMGB    uint64
-	GPU      GPUInfo
+	ID       string  `json:"id"`
+	Hostname string  `json:"hostname"`
+	OS       string  `json:"os"`
+	Arch     string  `json:"arch"`
+	CPUCores uint32  `json:"cpu_cores"`
+	RAMGB    uint64  `json:"ram_gb"`
+	GPU      GPUInfo `json:"gpu"`
 }
 
 type Task struct {
@@ -65,13 +66,14 @@ type Task struct {
 }
 
 type TaskResult struct {
-	TaskID     uint64
-	JobID      string
-	Status     string
-	Value      int64
-	Error      string
-	DurationUS uint64
-	NodeID     string
+	TaskID     uint64 `json:"task_id"`
+	JobID      string `json:"job_id"`
+	Status     string `json:"status"`
+	Value      int64  `json:"value"`
+	ErrorCode  string `json:"error_code,omitempty"`
+	Error      string `json:"error,omitempty"`
+	DurationUS uint64 `json:"duration_us"`
+	NodeID     string `json:"node_id"`
 }
 
 type frame struct {
@@ -293,12 +295,20 @@ func decodeTaskResultBatch(data []byte) ([]TaskResult, error) {
 		if err != nil {
 			return nil, err
 		}
+		errorCode := ""
+		if cursor < len(data) {
+			errorCode, err = readString(data, &cursor)
+			if err != nil {
+				return nil, err
+			}
+		}
 
 		results = append(results, TaskResult{
 			TaskID:     taskID,
 			JobID:      jobID,
 			Status:     status,
 			Value:      value,
+			ErrorCode:  errorCode,
 			Error:      errText,
 			DurationUS: durationUS,
 			NodeID:     nodeID,

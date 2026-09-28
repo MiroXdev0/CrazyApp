@@ -6,10 +6,7 @@ pub struct ProcessInfo {
     pub name: String,
 }
 
-const NODREN_NAMES: &[&str] = &[
-    "nodren",
-    "nodren.exe",
-];
+const NODREN_NAMES: &[&str] = &["nodren", "nodren.exe"];
 
 /// Returns all currently running Nodren processes.
 pub fn nodren_processes() -> Vec<ProcessInfo> {
@@ -50,11 +47,7 @@ fn is_nodren_process(name: &str) -> bool {
 #[cfg(target_os = "windows")]
 fn windows_processes() -> Vec<ProcessInfo> {
     let output = Command::new("tasklist")
-        .args([
-            "/FO",
-            "CSV",
-            "/NH",
-        ])
+        .args(["/FO", "CSV", "/NH"])
         .output();
 
     let Ok(output) = output else {
@@ -67,9 +60,7 @@ fn windows_processes() -> Vec<ProcessInfo> {
 
     let text = String::from_utf8_lossy(&output.stdout);
 
-    text.lines()
-        .filter_map(parse_windows_process)
-        .collect()
+    text.lines().filter_map(parse_windows_process).collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -104,13 +95,7 @@ fn parse_windows_process(line: &str) -> Option<ProcessInfo> {
 #[cfg(not(target_os = "windows"))]
 fn unix_processes() -> Vec<ProcessInfo> {
     let output = Command::new("ps")
-        .args([
-            "-A",
-            "-o",
-            "pid=",
-            "-o",
-            "comm=",
-        ])
+        .args(["-A", "-o", "pid=", "-o", "comm="])
         .output();
 
     let Ok(output) = output else {
@@ -123,9 +108,7 @@ fn unix_processes() -> Vec<ProcessInfo> {
 
     let text = String::from_utf8_lossy(&output.stdout);
 
-    text.lines()
-        .filter_map(parse_unix_process)
-        .collect()
+    text.lines().filter_map(parse_unix_process).collect()
 }
 
 #[cfg(not(target_os = "windows"))]

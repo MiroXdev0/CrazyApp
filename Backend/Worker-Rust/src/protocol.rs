@@ -1,6 +1,7 @@
 use std::io::{self, Read, Write};
 
-pub const MAGIC: u32 = 0x4E44524E;
+// Little-endian encoding of the ASCII bytes "NDRN".
+pub const MAGIC: u32 = 0x4E52444E;
 pub const VERSION: u16 = 1;
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 pub const MAX_BATCH: u32 = 4096;
@@ -24,7 +25,7 @@ pub enum MessageType {
 impl TryFrom<u16> for MessageType {
     type Error = io::Error;
 
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
+    fn try_from(value: u16) -> Result<Self, io::Error> {
         match value {
             1 => Ok(Self::Hello),
             2 => Ok(Self::Register),
@@ -36,7 +37,10 @@ impl TryFrom<u16> for MessageType {
             8 => Ok(Self::Error),
             9 => Ok(Self::Goodbye),
             10 => Ok(Self::Ready),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "unknown message type")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unknown message type",
+            )),
         }
     }
 }
@@ -75,7 +79,10 @@ fn get_u64(data: &[u8], cursor: &mut usize) -> io::Result<u64> {
 
 pub fn put_string(out: &mut Vec<u8>, value: &str) -> io::Result<()> {
     if value.len() > MAX_STRING {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "string too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "string too large",
+        ));
     }
     put_u32(out, value.len() as u32);
     out.extend_from_slice(value.as_bytes());
@@ -85,7 +92,10 @@ pub fn put_string(out: &mut Vec<u8>, value: &str) -> io::Result<()> {
 pub fn get_string(data: &[u8], cursor: &mut usize) -> io::Result<String> {
     let len = get_u32(data, cursor)? as usize;
     if len > MAX_STRING || *cursor + len > data.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid string length"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid string length",
+        ));
     }
     let value = String::from_utf8(data[*cursor..*cursor + len].to_vec())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid utf-8"))?;
@@ -93,9 +103,17 @@ pub fn get_string(data: &[u8], cursor: &mut usize) -> io::Result<String> {
     Ok(value)
 }
 
-pub fn write_frame<W: Write>(writer: &mut W, typ: MessageType, request_id: u64, payload: &[u8]) -> io::Result<()> {
+pub fn write_frame<W: Write>(
+    writer: &mut W,
+    typ: MessageType,
+    request_id: u64,
+    payload: &[u8],
+) -> io::Result<()> {
     if payload.len() > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame too large",
+        ));
     }
 
     writer.write_all(&MAGIC.to_le_bytes())?;
@@ -114,10 +132,16 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Frame> {
     let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
     let version = u16::from_le_bytes(header[4..6].try_into().unwrap());
     if magic != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid magic: got {magic:#010x}, expected {MAGIC:#010x}"),
+        ));
     }
     if version != VERSION {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "unsupported protocol version"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported protocol version",
+        ));
     }
 
     let typ = MessageType::try_from(u16::from_le_bytes(header[6..8].try_into().unwrap()))?;
@@ -125,12 +149,19 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Frame> {
     let len = u32::from_le_bytes(header[16..20].try_into().unwrap()) as usize;
 
     if len > MAX_FRAME {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame exceeds limit"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame exceeds limit",
+        ));
     }
 
     let mut payload = vec![0u8; len];
     reader.read_exact(&mut payload)?;
-    Ok(Frame { typ, request_id, payload })
+    Ok(Frame {
+        typ,
+        request_id,
+        payload,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +205,7 @@ pub struct TaskResult {
     pub job_id: String,
     pub status: String,
     pub value: i64,
+    pub error_code: String,
     pub error: String,
     pub duration_us: u64,
     pub node_id: String,
@@ -181,7 +213,14 @@ pub struct TaskResult {
 
 pub fn encode_register(node: &NodeInfo) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
-    for s in [&node.id, &node.hostname, &node.os, &node.arch, &node.gpu.vendor, &node.gpu.model] {
+    for s in [
+        &node.id,
+        &node.hostname,
+        &node.os,
+        &node.arch,
+        &node.gpu.vendor,
+        &node.gpu.model,
+    ] {
         put_string(&mut out, s)?;
     }
     put_u64(&mut out, node.cpu_cores as u64);
@@ -197,7 +236,10 @@ pub fn decode_task_batch(data: &[u8]) -> io::Result<Vec<Task>> {
 
     let count = u32::from_le_bytes(data[0..4].try_into().unwrap());
     if count == 0 || count > MAX_BATCH {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid task batch size"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid task batch size",
+        ));
     }
 
     let mut cursor = 4usize;
@@ -227,7 +269,10 @@ pub fn decode_task_batch(data: &[u8]) -> io::Result<Vec<Task>> {
         let payload_len = u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap()) as usize;
         cursor += 4;
         if payload_len > MAX_FRAME || cursor + payload_len > data.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid task payload"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid task payload",
+            ));
         }
 
         tasks.push(Task {
@@ -235,7 +280,11 @@ pub fn decode_task_batch(data: &[u8]) -> io::Result<Vec<Task>> {
             job_id,
             command,
             priority,
-            requirements: ResourceRequirements { cpu_cores, ram_gb, gpu_required },
+            requirements: ResourceRequirements {
+                cpu_cores,
+                ram_gb,
+                gpu_required,
+            },
             payload: data[cursor..cursor + payload_len].to_vec(),
         });
         cursor += payload_len;
@@ -246,7 +295,10 @@ pub fn decode_task_batch(data: &[u8]) -> io::Result<Vec<Task>> {
 
 pub fn encode_task_results(results: &[TaskResult]) -> io::Result<Vec<u8>> {
     if results.is_empty() || results.len() > MAX_BATCH as usize {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid result batch"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid result batch",
+        ));
     }
 
     let mut out = Vec::new();
@@ -260,6 +312,7 @@ pub fn encode_task_results(results: &[TaskResult]) -> io::Result<Vec<u8>> {
         put_string(&mut out, &result.error)?;
         put_u64(&mut out, result.duration_us);
         put_string(&mut out, &result.node_id)?;
+        put_string(&mut out, &result.error_code)?;
     }
 
     Ok(out)

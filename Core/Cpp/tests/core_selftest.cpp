@@ -1,5 +1,6 @@
 #include "../include/core_engine.hpp"
 #include "../include/compute_kernel.hpp"
+#include "../include/workload_dispatch.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -54,6 +55,53 @@ int main() {
             std::cerr << "async result mismatch at " << i << '\n';
             return 4;
         }
+    }
+
+    const std::vector<std::uint8_t> sum_payload{1, 2, 3, 4, 5};
+    const auto sum = nodren::dispatch_workload(
+        engine, 1001, "sum", sum_payload.data(), sum_payload.size());
+    if (sum.error != nodren::WorkloadError::None ||
+        sum.task.state != nodren::TaskState::Completed || sum.task.value != 15) {
+        std::cerr << "sum dispatch mismatch\n";
+        return 5;
+    }
+
+    std::vector<std::uint8_t> dot_payload;
+    const auto append_u32 = [&dot_payload](std::uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            dot_payload.push_back(static_cast<std::uint8_t>(value >> shift));
+        }
+    };
+    const auto append_i32 = [&append_u32](std::int32_t value) {
+        append_u32(static_cast<std::uint32_t>(value));
+    };
+    append_u32(3);
+    for (const auto value : {1, 2, 3}) append_i32(value);
+    for (const auto value : {4, 5, 6}) append_i32(value);
+
+    const auto dot = nodren::dispatch_workload(
+        engine, 1002, "dot_product", dot_payload.data(), dot_payload.size());
+    if (dot.error != nodren::WorkloadError::None ||
+        dot.task.state != nodren::TaskState::Completed || dot.task.value != 32) {
+        std::cerr << "dot_product dispatch mismatch\n";
+        return 6;
+    }
+
+    const auto unsupported = nodren::dispatch_workload(
+        engine, 1003, "unknown_workload", sum_payload.data(), sum_payload.size());
+    if (unsupported.error != nodren::WorkloadError::UnsupportedWorkload ||
+        unsupported.task.state != nodren::TaskState::Failed) {
+        std::cerr << "unsupported workload was not rejected\n";
+        return 7;
+    }
+
+    const std::uint8_t malformed[] = {3, 0};
+    const auto malformed_result = nodren::dispatch_workload(
+        engine, 1004, "dot_product", malformed, sizeof(malformed));
+    if (malformed_result.error != nodren::WorkloadError::MalformedPayload ||
+        malformed_result.task.state != nodren::TaskState::Failed) {
+        std::cerr << "malformed workload was not rejected\n";
+        return 8;
     }
 
     engine.shutdown();

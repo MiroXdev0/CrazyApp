@@ -11,11 +11,9 @@ Nodren turns multiple ordinary computers into one virtual computational machine.
 - Controller: owns the node registry, job placement, health tracking, and result aggregation.
 - Worker: reports local resources, executes jobs, and sends status and output back to the controller.
 - Scheduler: chooses the best-fit worker for each job based on resources, priority, and availability.
-- Shared protocol: defines the wire contract for registration, job dispatch, heartbeats, and result reporting.
+- Binary protocol: `Backend/Protocol` documents the wire contract implemented by the Go Controller and Rust Worker.
 - Native runtime: provides low-level memory primitives, runtime helpers, and system integration utilities.
-- Data plane: moves input, output, and intermediate data efficiently between nodes.
-- Web dashboard: exposes cluster health, node metadata, job status, and deployment telemetry.
-- Developer SDK: gives users a clean way to submit jobs, inspect clusters, and build custom workflows.
+- HTTP API and CLI: expose health, nodes, jobs, and workload submission.
 
 ## Execution flow
 
@@ -23,27 +21,28 @@ Nodren turns multiple ordinary computers into one virtual computational machine.
 2. The controller stores node metadata, health, and workload capacity.
 3. A user submits a workload with resource requirements and priority.
 4. The scheduler selects the best available workers.
-5. Work is partitioned and dispatched.
+5. Work is dispatched to a worker over the persistent binary session.
 6. Results are collected and reconstructed.
 7. Failed or overloaded nodes are retried or replaced.
 
 ## Future milestones
 
-### Phase 1: minimal cluster
+### Completed foundation
 - 1 controller
-- 2-3 workers
+- multiple workers
 - basic registration
-- basic job dispatch
-- basic result collection
+- resource-aware job dispatch
+- concurrent worker execution
+- result collection and reconnect/requeue behavior
 
-### Phase 2: scheduling and safety
+### Current pre-release
 - priority-aware scheduler
-- task retries
-- health checks
-- automatic failover
-- sandboxed execution boundaries
+- health checks and reconnect
+- standalone worker release
+- explicit LAN/TCP addressing
+- two-executable runtime packaging
 
-### Phase 3: distributed memory and storage
+### Future, not part of the pre-release
 - shared memory model
 - chunked data transfer
 - partitioned storage
@@ -64,15 +63,10 @@ Nodren turns multiple ordinary computers into one virtual computational machine.
 
 ## Planned modules
 
-- nexus controller
-- nexus worker
-- nexus run
-- nexus status
-- nexus deploy
-- nexus storage
-- nexus scheduler
-- nexus monitor
-- nexus sdk
+- Controller and scheduler
+- standalone Worker
+- `nodren` CLI commands
+- future storage, dashboards, SDKs, and deployment automation
 
 ## Why this system exists
 

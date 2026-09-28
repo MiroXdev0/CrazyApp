@@ -30,6 +30,11 @@ g++ -std=c++20 -O3 -DNDEBUG -march=native \
     -c "$ROOT/Cpp/src/nodren_c_api.cpp" \
     -o "$ROOT/build/nodren_c_api.o"
 
+g++ -std=c++20 -O3 -DNDEBUG -march=native \
+    -I"$ROOT/C/include" -I"$ROOT/Cpp/include" \
+    -c "$ROOT/Cpp/src/workload_dispatch.cpp" \
+    -o "$ROOT/build/workload_dispatch.o"
+
 g++ -c -O3 "$ROOT/Assembly/X64/Linux/sum_avx2.S" \
     -o "$ROOT/build/sum_avx2.o"
 
@@ -41,6 +46,7 @@ g++ -std=c++20 -O3 -DNDEBUG -march=native \
     "$ROOT/build/thread_pool.o" \
     "$ROOT/build/core_engine.o" \
     "$ROOT/build/nodren_c_api.o" \
+    "$ROOT/build/workload_dispatch.o" \
     "$ROOT/build/sum_avx2.o" \
     -pthread -o "$OUT"
 
@@ -53,6 +59,7 @@ g++ -std=c++20 -O3 -DNDEBUG -march=native \
     "$ROOT/build/thread_pool.o" \
     "$ROOT/build/core_engine.o" \
     "$ROOT/build/nodren_c_api.o" \
+    "$ROOT/build/workload_dispatch.o" \
     "$ROOT/build/sum_avx2.o" \
     -pthread -o "$ROOT/build/nodren_core_selftest"
 
@@ -70,6 +77,7 @@ g++ -std=c++20 -O3 -DNDEBUG -march=native \
     "$ROOT/build/thread_pool.o" \
     "$ROOT/build/core_engine.o" \
     "$ROOT/build/nodren_c_api.o" \
+    "$ROOT/build/workload_dispatch.o" \
     "$ROOT/build/sum_avx2.o" \
     -pthread -o "$ROOT/build/nodren_core_selftest"
 
