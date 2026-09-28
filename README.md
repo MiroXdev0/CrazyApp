@@ -287,7 +287,28 @@ release/
 └── nodren_core.dll
 ```
 
-### Controller
+### `nodren.exe` — Server
+
+`nodren.exe` is the **server-side launcher**.
+
+It starts the Nodren backend services required to operate the cluster:
+
+```text
+┌─────────────────────────────┐
+│         nodren.exe          │
+├─────────────────────────────┤
+│ Controller                  │
+│ Scheduler                   │
+│ Worker management           │
+│ Job management              │
+│ HTTP API                    │
+│ TCP worker server           │
+└─────────────────────────────┘
+```
+
+It does **not** provide the desktop graphical interface.
+
+Start it on the machine hosting the Nodren Controller:
 
 ```bash
 nodren.exe
@@ -300,16 +321,57 @@ Worker TCP     :9000
 HTTP API       :8080
 ```
 
-### Worker
+### `nodren-worker.exe` — Worker
+
+`nodren-worker.exe` is the standalone worker runtime.
+
+Run it on machines that will contribute compute resources:
 
 ```bash
 nodren-worker.exe --controller 192.168.10.1:9000
 ```
 
-### Desktop UI
+Workers connect to the Controller and execute assigned workloads through the native core.
+
+### `nodren-ui.exe` — Desktop UI
+
+`nodren-ui.exe` is the **graphical desktop interface** for Nodren.
+
+It communicates with the Controller through the HTTP API and provides:
+
+```text
+Dashboard
+Workers
+Jobs
+Workload submission
+Distribution controls
+Cluster status
+Configuration
+```
+
+Start the UI separately:
 
 ```bash
 nodren-ui.exe
+```
+
+The UI does **not** start the Controller, spawn workers, or perform backend computation.
+
+```text
+             ┌──────────────────┐
+             │  nodren-ui.exe   │
+             │   Desktop UI     │
+             └────────┬─────────┘
+                      │ HTTP
+                      ▼
+             ┌──────────────────┐
+             │    nodren.exe    │
+             │     Servers      │
+             └────────┬─────────┘
+                      │ TCP
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+       Worker 1    Worker 2    Worker N
 ```
 
 Self-test:
@@ -318,7 +380,11 @@ Self-test:
 nodren-ui.exe --self-test
 ```
 
----
+The UI endpoint can be configured through Settings or:
+
+```text
+NODREN_CONTROLLER_URL
+```
 
 # `06` — Networking
 
