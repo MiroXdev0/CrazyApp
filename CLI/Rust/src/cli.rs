@@ -2,12 +2,28 @@ use std::env;
 
 #[derive(Debug)]
 pub enum Command {
+    // Service
     Start,
     Stop,
+    Restart,
     Status,
+
+    // System
     Check(Option<String>),
+    Doctor,
+    Config,
+
+    // Devices
     Devices,
+    Ping(String),
+    Info(Option<String>),
+
+    // Workloads
     Run(Vec<String>),
+    Jobs,
+    Logs(Vec<String>),
+
+    // General
     Version,
     Help,
 }
@@ -15,31 +31,100 @@ pub enum Command {
 pub fn parse_command() -> Command {
     let mut args = env::args().skip(1);
 
-    match args.next().as_deref() {
-        Some("start") => Command::Start,
-        Some("stop") => Command::Stop,
-        Some("status") => Command::Status,
+    let command = match args.next() {
+        Some(command) => command.to_lowercase(),
+        None => return Command::Help,
+    };
 
-        Some("check") => {
+    match command.as_str() {
+        // -------------------------------------------------
+        // Service
+        // -------------------------------------------------
+
+        "start" => Command::Start,
+
+        "stop" => Command::Stop,
+
+        "restart" | "reload" => Command::Restart,
+
+        "status" | "state" => Command::Status,
+
+        // -------------------------------------------------
+        // System
+        // -------------------------------------------------
+
+        "check" => {
             Command::Check(args.next())
         }
 
-        Some("devices") => Command::Devices,
+        "doctor" | "diagnose" | "diagnostics" => {
+            Command::Doctor
+        }
 
-        Some("run") => {
+        "config" | "configuration" => {
+            Command::Config
+        }
+
+        // -------------------------------------------------
+        // Devices
+        // -------------------------------------------------
+
+        "devices" | "nodes" => {
+            Command::Devices
+        }
+
+        "ping" => {
+            match args.next() {
+                Some(device) => Command::Ping(device),
+
+                None => {
+                    eprintln!("Error: 'ping' requires a device.");
+                    eprintln!("Usage: nodren ping <device>");
+                    Command::Help
+                }
+            }
+        }
+
+        "info" => {
+            Command::Info(args.next())
+        }
+
+        // -------------------------------------------------
+        // Workloads
+        // -------------------------------------------------
+
+        "run" => {
             Command::Run(args.collect())
         }
 
-        Some("version") | Some("--version") | Some("-v") => {
+        "jobs" | "job" => {
+            Command::Jobs
+        }
+
+        "logs" | "log" => {
+            Command::Logs(args.collect())
+        }
+
+        // -------------------------------------------------
+        // General
+        // -------------------------------------------------
+
+        "version" | "--version" | "-v" => {
             Command::Version
         }
 
-        Some("help") | Some("--help") | Some("-h") | None => {
+        "help" | "--help" | "-h" => {
             Command::Help
         }
 
-        Some(command) => {
-            eprintln!("Unknown command: {command}");
+        // -------------------------------------------------
+        // Unknown
+        // -------------------------------------------------
+
+        unknown => {
+            eprintln!("Unknown command: {unknown}");
+            eprintln!("Run 'nodren help' for available commands.");
+
             Command::Help
         }
     }
