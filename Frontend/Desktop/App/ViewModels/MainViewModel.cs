@@ -188,7 +188,8 @@ public partial class MainViewModel : ViewModelBase
             }
             else
             {
-                RunStatus = $"Job {completed.Id} · {completed.Status} · worker {completed.NodeId}";
+                var workerDisplay = completed.NodeIds.Count > 0 ? string.Join(", ", completed.NodeIds) : DisplayOrDash(completed.NodeId);
+                RunStatus = $"Job {completed.Id} · {completed.Status} · worker(s): {workerDisplay}";
                 RunResult = $"Result: {completed.Result?.Value} · {completed.Result?.DurationUs} us";
             }
 
@@ -237,8 +238,10 @@ public partial class MainViewModel : ViewModelBase
 
         var result = SelectedJob.Result;
         var distribution = SelectedJob.Distribution;
-        DistributionSummary = $"{distribution.Mode} · {distribution.CompletedPartitions}/{distribution.TotalPartitions} partitions · {distribution.CompletedUnits}/{distribution.TotalUnits} units";
-        JobDetails = $"Job ID: {SelectedJob.Id}\nWorkload: {SelectedJob.Command}\nState: {SelectedJob.Status}\nDistribution: {distribution.Mode}\nPartitions: {distribution.CompletedPartitions}/{distribution.TotalPartitions}\nUnits: {distribution.CompletedUnits}/{distribution.TotalUnits}\nWorkers: {DisplayOrDash(string.Join(", ", SelectedJob.NodeIds))}\nCPU: {SelectedJob.Requirements.CpuCores}\nRAM: {SelectedJob.Requirements.RamGb} GB\nGPU required: {SelectedJob.Requirements.GpuRequired}\nResult: {result?.Value.ToString() ?? "-"}\nError: {DisplayOrDash(result?.Error)}";
+        var partitionableDesc = distribution.Partitionable ? "Yes (Adaptive)" : "No (Single task)";
+        var workerDisplay = SelectedJob.NodeIds.Count > 0 ? string.Join(", ", SelectedJob.NodeIds) : DisplayOrDash(SelectedJob.NodeId);
+        DistributionSummary = $"{distribution.Mode} · {distribution.CompletedPartitions}/{distribution.TotalPartitions} partitions · {distribution.CompletedUnits}/{distribution.TotalUnits} units ({distribution.ProgressPercent:0.#}%)";
+        JobDetails = $"Job ID: {SelectedJob.Id}\nWorkload: {SelectedJob.Command}\nState: {SelectedJob.Status}\nPartitionable: {partitionableDesc}\nDistribution: {distribution.Mode}\nPartitions: {distribution.CompletedPartitions}/{distribution.TotalPartitions} (Running: {distribution.RunningPartitions}, Pending: {distribution.PendingPartitions}, Requeued: {distribution.RequeuedPartitions}, Failed: {distribution.FailedPartitions})\nUnits: {distribution.CompletedUnits}/{distribution.TotalUnits} ({distribution.ProgressPercent:0.#}%)\nWorkers: {workerDisplay}\nCPU: {SelectedJob.Requirements.CpuCores}\nRAM: {SelectedJob.Requirements.RamGb} GB\nGPU required: {SelectedJob.Requirements.GpuRequired}\nResult: {result?.Value.ToString() ?? "-"}\nError: {DisplayOrDash(result?.Error)}";
     }
 
     partial void OnIsAutomaticDistributionChanged(bool value)

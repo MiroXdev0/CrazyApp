@@ -90,12 +90,20 @@ public sealed class DistributionInfo
     public int TotalPartitions { get; set; }
     [JsonPropertyName("completed_partitions")]
     public int CompletedPartitions { get; set; }
+    [JsonPropertyName("running_partitions")]
+    public int RunningPartitions { get; set; }
+    [JsonPropertyName("pending_partitions")]
+    public int PendingPartitions { get; set; }
     [JsonPropertyName("failed_partitions")]
     public int FailedPartitions { get; set; }
+    [JsonPropertyName("requeued_partitions")]
+    public int RequeuedPartitions { get; set; }
     [JsonPropertyName("total_units")]
     public ulong TotalUnits { get; set; }
     [JsonPropertyName("completed_units")]
     public ulong CompletedUnits { get; set; }
+    [JsonPropertyName("progress_percent")]
+    public double ProgressPercent { get; set; }
     [JsonPropertyName("manual_allocations")]
     public Dictionary<string, byte> ManualAllocations { get; set; } = [];
 }

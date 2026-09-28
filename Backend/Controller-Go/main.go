@@ -34,8 +34,8 @@ type NodeRecord struct {
 	Info              NodeInfo  `json:"info"`
 	State             NodeState `json:"state"`
 	AssignedJobs      []string  `json:"assigned_jobs,omitempty"`
-	AllocatedCPUCores uint32    `json:"allocated_cpu_cores,omitempty"`
-	AllocatedRAMGB    uint64    `json:"allocated_ram_gb,omitempty"`
+	AllocatedCPUCores uint32    `json:"allocated_cpu_cores"`
+	AllocatedRAMGB    uint64    `json:"allocated_ram_gb"`
 	AvailableCPUCores uint32    `json:"available_cpu_cores"`
 	AvailableRAMGB    uint64    `json:"available_ram_gb"`
 	CapacityScore     float64   `json:"capacity_score"`
@@ -90,9 +90,13 @@ type DistributionInfo struct {
 	Partitionable       bool             `json:"partitionable"`
 	TotalPartitions     int              `json:"total_partitions"`
 	CompletedPartitions int              `json:"completed_partitions"`
+	RunningPartitions   int              `json:"running_partitions"`
+	PendingPartitions   int              `json:"pending_partitions"`
 	FailedPartitions    int              `json:"failed_partitions"`
+	RequeuedPartitions  int              `json:"requeued_partitions"`
 	TotalUnits          uint64           `json:"total_units"`
 	CompletedUnits      uint64           `json:"completed_units"`
+	ProgressPercent     float64          `json:"progress_percent"`
 	ManualAllocations   map[string]uint8 `json:"manual_allocations,omitempty"`
 }
 
@@ -196,6 +200,8 @@ type Controller struct {
 	nextTask uint64
 	nextJob  uint64
 
+	scheduleNotify chan struct{}
+
 	tcpAddr  string
 	httpAddr string
 }
@@ -208,8 +214,16 @@ func NewController(tcpAddr, httpAddr string) *Controller {
 		taskToJob:       make(map[uint64]string),
 		taskToNode:      make(map[uint64]string),
 		taskToPartition: make(map[uint64]string),
+		scheduleNotify:  make(chan struct{}, 1),
 		tcpAddr:         tcpAddr,
 		httpAddr:        httpAddr,
+	}
+}
+
+func (c *Controller) triggerSchedule() {
+	select {
+	case c.scheduleNotify <- struct{}{}:
+	default:
 	}
 }
 
@@ -358,6 +372,7 @@ func (c *Controller) handleSession(s *session) {
 				}
 			}
 			c.mu.Unlock()
+			c.triggerSchedule()
 			log.Printf("worker ready id=%s", s.nodeID)
 
 		case MsgTaskResultBatch:
@@ -410,6 +425,7 @@ func (c *Controller) handleDisconnect(s *session) {
 		node.State = NodeLost
 	}
 	c.requeueNodeJobsLocked(s.nodeID)
+	c.triggerSchedule()
 	log.Printf("worker disconnected id=%s", s.nodeID)
 }
 
@@ -512,6 +528,9 @@ func (c *Controller) updateJobPlacementLocked(job *Job) {
 func (c *Controller) updateJobProgressLocked(job *Job) {
 	completed := 0
 	failed := 0
+	running := 0
+	pending := 0
+	requeued := 0
 	var completedUnits uint64
 	active := false
 	queued := false
@@ -524,13 +543,24 @@ func (c *Controller) updateJobProgressLocked(job *Job) {
 			failed++
 		case PartitionAssigned, PartitionRunning:
 			active = true
-		case PartitionQueued, PartitionRequeued:
+			running++
+		case PartitionQueued:
 			queued = true
+			pending++
+		case PartitionRequeued:
+			queued = true
+			requeued++
 		}
 	}
 	job.Distribution.CompletedPartitions = completed
 	job.Distribution.FailedPartitions = failed
+	job.Distribution.RunningPartitions = running
+	job.Distribution.PendingPartitions = pending
+	job.Distribution.RequeuedPartitions = requeued
 	job.Distribution.CompletedUnits = completedUnits
+	if job.Distribution.TotalUnits > 0 {
+		job.Distribution.ProgressPercent = math.Round((float64(completedUnits)/float64(job.Distribution.TotalUnits))*10000) / 100
+	}
 	if failed > 0 {
 		job.Status = JobFailed
 	} else if completed == len(job.Partitions) && completed > 0 {
@@ -838,6 +868,8 @@ func (c *Controller) scheduleLoop(ctx context.Context) {
 
 	for {
 		select {
+		case <-c.scheduleNotify:
+			c.scheduleOnce()
 		case <-ticker.C:
 			c.scheduleOnce()
 		case <-ctx.Done():
@@ -941,7 +973,7 @@ func (c *Controller) choosePartitionNodeLocked(job *Job) string {
 	}
 	assignedUnits := make(map[string]uint64)
 	for _, partition := range job.Partitions {
-		if partition.NodeID != "" && (partition.State == PartitionAssigned || partition.State == PartitionRunning) {
+		if partition.NodeID != "" && (partition.State == PartitionAssigned || partition.State == PartitionRunning || (job.Distribution.Mode == DistributionManual && partition.State == PartitionCompleted)) {
 			assignedUnits[partition.NodeID] += partition.Units
 		}
 	}
@@ -1017,11 +1049,28 @@ func (c *Controller) rollbackPartitionLocked(job *Job, partition *Partition, tas
 	}
 }
 
+func hasSchedulableWork(job *Job) bool {
+	if job == nil {
+		return false
+	}
+	if job.Status == JobQueued {
+		return true
+	}
+	if job.Status == JobRunning {
+		for _, partition := range job.Partitions {
+			if partition.State == PartitionQueued || partition.State == PartitionRequeued {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *Controller) scheduleOnce() {
 	c.mu.RLock()
 	queued := make([]queuedJob, 0)
 	for _, job := range c.jobs {
-		if job.Status == JobQueued {
+		if hasSchedulableWork(job) {
 			queued = append(queued, queuedJob{id: job.ID, priority: job.Priority})
 		}
 	}
@@ -1036,7 +1085,7 @@ func (c *Controller) scheduleOnce() {
 	for _, candidate := range queued {
 		c.mu.Lock()
 		job := c.jobs[candidate.id]
-		if job == nil || job.Status != JobQueued {
+		if job == nil || !hasSchedulableWork(job) {
 			c.mu.Unlock()
 			continue
 		}
@@ -1145,6 +1194,17 @@ func (c *Controller) failJobLocked(job *Job, errorCode, reason, nodeID string) {
 }
 
 func (c *Controller) finalizeJobLocked(job *Job) {
+	if !job.Distribution.Partitionable {
+		if len(job.Partitions) == 1 && job.Partitions[0].Result != nil {
+			resultCopy := *job.Partitions[0].Result
+			job.Result = &resultCopy
+			if job.Result.NodeID == "" && len(job.NodeIDs) == 1 {
+				job.Result.NodeID = job.NodeIDs[0]
+			}
+			job.UpdatedAt = time.Now()
+		}
+		return
+	}
 	definition, partitionable := workloadDefinitionFor(job.Command)
 	if !partitionable {
 		return
@@ -1249,6 +1309,7 @@ func (c *Controller) applyResults(results []TaskResult) {
 		delete(c.taskToJob, result.TaskID)
 		delete(c.taskToNode, result.TaskID)
 	}
+	c.triggerSchedule()
 }
 
 func (c *Controller) setJobFailed(id, errorCode, reason string) {
@@ -1342,6 +1403,7 @@ func (c *Controller) createJob(req jobRequest) (*Job, error) {
 		return nil, errors.New("job already exists")
 	}
 	c.jobs[id] = job
+	c.triggerSchedule()
 	return job, nil
 }
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// Returns the operating system name.
 pub fn name() -> &'static str {
     if cfg!(target_os = "windows") {

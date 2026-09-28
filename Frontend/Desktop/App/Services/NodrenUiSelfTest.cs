@@ -13,15 +13,32 @@ public static class NodrenUiSelfTest
             Console.Error.WriteLine("UI self-test failed: automatic distribution is not the default.");
             return 1;
         }
-        try
+        var validAlloc = NodrenDistribution.ParseManualAllocations("worker-a=60,worker-b=40");
+        if (validAlloc["worker-a"] != 60 || validAlloc["worker-b"] != 40)
         {
-            _ = NodrenDistribution.ParseManualAllocations("worker-a=60,worker-b=40");
-            _ = NodrenDistribution.ParseManualAllocations("worker-a=60,worker-b=30");
-            Console.Error.WriteLine("UI self-test failed: invalid manual allocation was accepted.");
+            Console.Error.WriteLine("UI self-test failed: valid manual allocation was parsed incorrectly.");
             return 1;
         }
-        catch (FormatException)
+
+        string[] invalidCases = [
+            "worker-a=60,worker-b=30", // sum != 100
+            "worker-a=50,worker-a=50", // duplicate
+            "worker-a=0,worker-b=100", // 0 percent
+            "worker-a=150",            // > 100 percent
+            "invalid-entry",           // malformed
+            "",                        // empty
+        ];
+        foreach (var invalidCase in invalidCases)
         {
+            try
+            {
+                _ = NodrenDistribution.ParseManualAllocations(invalidCase);
+                Console.Error.WriteLine($"UI self-test failed: invalid manual allocation was accepted: {invalidCase}");
+                return 1;
+            }
+            catch (FormatException)
+            {
+            }
         }
 
         var settings = NodrenSettingsStore.Load();

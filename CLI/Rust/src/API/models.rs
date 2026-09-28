@@ -35,6 +35,7 @@ pub struct NodeInfo {
     pub gpu: GpuInfo,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct NodeRecord {
     pub info: NodeInfo,
@@ -45,6 +46,14 @@ pub struct NodeRecord {
     pub allocated_cpu_cores: u32,
     #[serde(default)]
     pub allocated_ram_gb: u64,
+    #[serde(default)]
+    pub available_cpu_cores: u32,
+    #[serde(default)]
+    pub available_ram_gb: u64,
+    #[serde(default)]
+    pub capacity_score: f64,
+    #[serde(default)]
+    pub effective_capacity: f64,
     #[serde(default)]
     pub last_heartbeat: String,
     #[serde(default)]
@@ -58,6 +67,34 @@ pub struct ResourceRequirements {
     pub gpu_required: bool,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DistributionInfo {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub partitionable: bool,
+    #[serde(default)]
+    pub total_partitions: usize,
+    #[serde(default)]
+    pub completed_partitions: usize,
+    #[serde(default)]
+    pub running_partitions: usize,
+    #[serde(default)]
+    pub pending_partitions: usize,
+    #[serde(default)]
+    pub failed_partitions: usize,
+    #[serde(default)]
+    pub requeued_partitions: usize,
+    #[serde(default)]
+    pub total_units: u64,
+    #[serde(default)]
+    pub completed_units: u64,
+    #[serde(default)]
+    pub progress_percent: f64,
+}
+
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct JobResult {
     #[serde(default)]
@@ -76,6 +113,7 @@ pub struct JobResult {
     pub node_id: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Job {
     pub id: String,
@@ -88,7 +126,11 @@ pub struct Job {
     pub status: String,
     #[serde(default)]
     pub node_id: String,
+    #[serde(default)]
+    pub node_ids: Vec<String>,
     pub result: Option<JobResult>,
+    #[serde(default)]
+    pub distribution: DistributionInfo,
     #[serde(default)]
     pub created_at: String,
     #[serde(default)]

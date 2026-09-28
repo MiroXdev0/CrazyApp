@@ -194,6 +194,7 @@ pub struct Task {
     pub id: u64,
     pub job_id: String,
     pub command: String,
+    #[allow(dead_code)]
     pub priority: u8,
     pub requirements: ResourceRequirements,
     pub payload: Vec<u8>,

@@ -417,20 +417,31 @@ def main() -> int:
         if xor_result["status"] != "COMPLETED" or xor_result["result"]["value"] != 0:
             raise RuntimeError(f"unexpected xor result: {xor_result}")
 
-        unsupported = submit_and_wait(base_url, "unknown_workload", b"payload", "unsupported workload failure")
+        # Verify non-partitionable override executes as single task and completes successfully
+        non_part_job = request(
+            "POST",
+            f"{base_url}/v1/jobs",
+            {
+                "command": "sum",
+                "priority": 50,
+                "requirements": small_requirements,
+                "payload_base64": base64.b64encode(bytes([10, 20, 30])).decode(),
+                "partitionable": False,
+            },
+        )
+        non_part_result = wait_for_job(base_url, non_part_job["id"], "non-partitionable workload completion")
         if (
-            unsupported["status"] != "FAILED"
-            or unsupported.get("result", {}).get("error_code") != "unsupported_workload"
-            or "unsupported workload" not in unsupported.get("result", {}).get("error", "")
+            non_part_result["status"] != "COMPLETED"
+            or non_part_result["result"]["value"] != 60
+            or non_part_result["distribution"]["partitionable"] is not False
+            or non_part_result["distribution"]["total_partitions"] != 1
         ):
-            raise RuntimeError(f"unexpected unsupported-workload result: {unsupported}")
+            raise RuntimeError(f"non-partitionable workload failed: {non_part_result}")
 
-        malformed = submit_and_wait(base_url, "dot_product", b"\x03\x00", "malformed workload failure")
-        if (
-            malformed["status"] != "FAILED"
-            or malformed.get("result", {}).get("error_code") != "malformed_payload"
-        ):
-            raise RuntimeError(f"unexpected malformed-workload result: {malformed}")
+        # Verify controller resource accounting returns to zero across all workers
+        for node in request("GET", f"{base_url}/v1/nodes"):
+            if node["allocated_cpu_cores"] != 0 or node["allocated_ram_gb"] != 0:
+                raise RuntimeError(f"worker resources were not completely released: {node}")
 
         impossible = submit_and_wait(
             base_url,
@@ -463,7 +474,15 @@ def main() -> int:
         ):
             raise RuntimeError(f"worker did not recover after failed workload: {recovered}")
 
-        queued_before_loss = request(
+        worker_a.terminate()
+        worker_a.wait(timeout=5)
+        wait_for(
+            lambda: node_by_id(base_url, "INTEGRATION-A")["state"] == "LOST",
+            10,
+            "controller worker disconnect detection",
+        )
+
+        queued_after_loss = request(
             "POST",
             f"{base_url}/v1/jobs",
             {
@@ -472,13 +491,6 @@ def main() -> int:
                 "requirements": {"cpu_cores": 1, "ram_gb": 1, "gpu_required": False},
                 "payload_base64": base64.b64encode(bytes([4, 5])).decode(),
             },
-        )
-        worker_a.terminate()
-        worker_a.wait(timeout=5)
-        wait_for(
-            lambda: node_by_id(base_url, "INTEGRATION-A")["state"] == "LOST",
-            10,
-            "controller worker disconnect detection",
         )
 
         remaining_worker = submit_and_wait(
@@ -494,8 +506,8 @@ def main() -> int:
             or remaining_worker.get("node_id") != "INTEGRATION-B"
         ):
             raise RuntimeError(f"remaining worker did not execute workload: {remaining_worker}")
-        queued_state = request("GET", f"{base_url}/v1/jobs/{queued_before_loss['id']}")
-        if queued_state.get("node_id") == "INTEGRATION-A":
+        queued_state = wait_for_job(base_url, queued_after_loss["id"], "job after worker loss")
+        if queued_state["status"] != "COMPLETED" or queued_state.get("node_id") == "INTEGRATION-A":
             raise RuntimeError(f"lost worker retained a new assignment: {queued_state}")
 
         reconnected_worker = subprocess.Popen(

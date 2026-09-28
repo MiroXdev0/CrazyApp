@@ -159,10 +159,16 @@ func cliJobs() error {
 	}
 	for _, job := range jobs {
 		worker := job.NodeID
+		if worker == "" && len(job.NodeIDs) > 0 {
+			worker = strings.Join(job.NodeIDs, ", ")
+		}
 		if worker == "" {
 			worker = "-"
 		}
 		fmt.Printf("%s  %s  state=%s  worker=%s  cpu=%d ram=%dGB gpu=%t\n", job.ID, job.Command, job.Status, worker, job.Requirements.CPUCores, job.Requirements.RAMGB, job.Requirements.GPURequired)
+		if job.Distribution.Partitionable && job.Distribution.TotalPartitions > 1 {
+			fmt.Printf("  distribution=%s partitions=%d/%d units=%d/%d\n", job.Distribution.Mode, job.Distribution.CompletedPartitions, job.Distribution.TotalPartitions, job.Distribution.CompletedUnits, job.Distribution.TotalUnits)
+		}
 		if job.Result != nil && job.Result.Error != "" {
 			fmt.Printf("  error=%s %s\n", job.Result.ErrorCode, job.Result.Error)
 		}
@@ -186,8 +192,12 @@ func cliRun(args []string) error {
 		return err
 	}
 	fmt.Printf("Workload     %s\nJob ID       %s\nState        %s\n", submitted.Command, submitted.ID, submitted.Status)
-	if submitted.NodeID != "" {
-		fmt.Printf("Worker       %s\n", submitted.NodeID)
+	worker := submitted.NodeID
+	if worker == "" && len(submitted.NodeIDs) > 0 {
+		worker = strings.Join(submitted.NodeIDs, ", ")
+	}
+	if worker != "" {
+		fmt.Printf("Worker       %s\n", worker)
 	}
 	fmt.Println("Waiting for result...")
 	seconds := 30
@@ -201,7 +211,14 @@ func cliRun(args []string) error {
 	if completed.Result == nil {
 		return &cliError{message: "Invalid Controller response: completed job has no result"}
 	}
-	fmt.Printf("State        %s\nWorker       %s\nResult       %d\nDuration     %d us\n", completed.Status, completed.NodeID, completed.Result.Value, completed.Result.DurationUS)
+	worker = completed.NodeID
+	if worker == "" && len(completed.NodeIDs) > 0 {
+		worker = strings.Join(completed.NodeIDs, ", ")
+	}
+	fmt.Printf("State        %s\nWorker       %s\nResult       %d\nDuration     %d us\n", completed.Status, worker, completed.Result.Value, completed.Result.DurationUS)
+	if completed.Distribution.Partitionable && completed.Distribution.TotalPartitions > 1 {
+		fmt.Printf("Distribution %s (%d partitions, %d units)\n", completed.Distribution.Mode, completed.Distribution.TotalPartitions, completed.Distribution.TotalUnits)
+	}
 	return nil
 }
 
