@@ -13,6 +13,15 @@
 
 Nodren provides a Controller, worker runtime, scheduler, artifact system, execution layer, native compute core, and CLI that work together to submit and execute workloads across a cluster.
 
+> **⚠️ Beta Release**
+>
+> Nodren is currently in **Beta**. The project is actively being developed, and some features may change, break, or be incomplete.
+>
+> **Linux support is still under development** and is not yet fully supported. Windows is currently the primary supported platform.
+>
+> If you encounter bugs or unexpected behavior, please report them through the project's issue tracker.
+
+
 **Status: pre-release / active development**
 
 Windows x64 is currently the primary release platform. Linux x64 support exists but should be considered **beta / unstable**.
