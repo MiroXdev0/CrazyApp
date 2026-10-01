@@ -1,12 +1,15 @@
 mod executor;
+mod hashing;
 mod native_core;
+mod process_executor;
 mod protocol;
 
 use executor::WorkerExecutor;
 use native_core::NativeCore;
 use protocol::{
-    Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult, decode_task_batch, encode_heartbeat,
-    encode_register, encode_register_ack, read_frame, write_frame,
+    Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult, decode_artifact_begin,
+    decode_artifact_chunk, decode_artifact_end, decode_general_task, decode_task_batch,
+    encode_heartbeat, encode_register, encode_register_ack, read_frame, write_frame,
 };
 
 use std::{
@@ -29,6 +32,7 @@ struct WorkerConfig {
     gpu_vendor: String,
     gpu_model: String,
     gpu_vram_gb: u64,
+    gpu_count: u32,
     ram_override_gb: Option<u64>,
 }
 
@@ -65,6 +69,43 @@ fn os_name() -> &'static str {
 
 fn arch_name() -> &'static str {
     std::env::consts::ARCH
+}
+
+fn cpu_model() -> String {
+    if cfg!(target_os = "linux") {
+        if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
+            if let Some(model) = text
+                .lines()
+                .find_map(|line| line.strip_prefix("model name:").map(str::trim))
+            {
+                return model.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn available_runtimes() -> Vec<String> {
+    let candidates = [
+        "python",
+        "python3",
+        "node",
+        "nodejs",
+        "bash",
+        "sh",
+        "powershell",
+        "pwsh",
+    ];
+    candidates
+        .iter()
+        .filter(|runtime| {
+            process::Command::new(runtime)
+                .arg("--version")
+                .output()
+                .is_ok()
+        })
+        .map(|runtime| (*runtime).to_string())
+        .collect()
 }
 
 fn detect_ram_gb() -> u64 {
@@ -138,7 +179,109 @@ fn build_config() -> WorkerConfig {
         gpu_vram_gb: arg_value("--gpu-vram-gb")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
+        gpu_count: arg_value("--gpu-count")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
         ram_override_gb: arg_value("--ram-gb").and_then(|v| v.parse().ok()),
+    }
+}
+
+fn detect_nvidia_gpu() -> GPUInfo {
+    let output = process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=name,memory.total,driver_version,compute_cap",
+            "--format=csv,noheader,nounits",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return GPUInfo {
+            vendor: String::new(),
+            model: String::new(),
+            vram_gb: 0,
+            count: 0,
+            capabilities: Vec::new(),
+            driver: String::new(),
+            runtime: String::new(),
+        };
+    };
+    if !output.status.success() {
+        return GPUInfo {
+            vendor: String::new(),
+            model: String::new(),
+            vram_gb: 0,
+            count: 0,
+            capabilities: Vec::new(),
+            driver: String::new(),
+            runtime: String::new(),
+        };
+    }
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    let rows = output_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    let Some(first) = rows.first() else {
+        return GPUInfo {
+            vendor: String::new(),
+            model: String::new(),
+            vram_gb: 0,
+            count: 0,
+            capabilities: Vec::new(),
+            driver: String::new(),
+            runtime: String::new(),
+        };
+    };
+    let fields = first.split(',').map(str::trim).collect::<Vec<_>>();
+    let vram_mb = fields
+        .get(1)
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let mut capabilities = vec!["cuda".to_string()];
+    if let Some(compute_capability) = fields.get(3).filter(|value| !value.is_empty()) {
+        capabilities.push(format!("cuda_compute_{compute_capability}"));
+    }
+    GPUInfo {
+        vendor: "NVIDIA".to_string(),
+        model: fields.first().copied().unwrap_or_default().to_string(),
+        vram_gb: vram_mb.div_ceil(1024),
+        count: rows.len() as u32,
+        capabilities,
+        driver: fields.get(2).copied().unwrap_or_default().to_string(),
+        runtime: "CUDA".to_string(),
+    }
+}
+
+fn local_gpu_info(config: &WorkerConfig) -> GPUInfo {
+    let detected = detect_nvidia_gpu();
+    let model = if config.gpu_model.is_empty() {
+        detected.model
+    } else {
+        config.gpu_model.clone()
+    };
+    let count = if config.gpu_count > 0 {
+        config.gpu_count
+    } else if !config.gpu_model.is_empty() {
+        1
+    } else {
+        detected.count
+    };
+    GPUInfo {
+        vendor: if config.gpu_vendor.is_empty() {
+            detected.vendor
+        } else {
+            config.gpu_vendor.clone()
+        },
+        model,
+        vram_gb: if config.gpu_vram_gb > 0 {
+            config.gpu_vram_gb
+        } else {
+            detected.vram_gb
+        },
+        count,
+        capabilities: detected.capabilities,
+        driver: detected.driver,
+        runtime: detected.runtime,
     }
 }
 
@@ -148,17 +291,22 @@ fn local_node_info(config: &WorkerConfig) -> NodeInfo {
         hostname: hostname(),
         os: os_name().to_string(),
         arch: arch_name().to_string(),
+        cpu_model: cpu_model(),
         cpu_cores: config.cpu_override.unwrap_or_else(|| {
             thread::available_parallelism()
                 .map(|n| n.get() as u32)
                 .unwrap_or(1)
         }),
         ram_gb: config.ram_override_gb.unwrap_or_else(detect_ram_gb),
-        gpu: GPUInfo {
-            vendor: config.gpu_vendor.clone(),
-            model: config.gpu_model.clone(),
-            vram_gb: config.gpu_vram_gb,
-        },
+        gpu: local_gpu_info(config),
+        runtimes: available_runtimes(),
+        execution_types: vec![
+            "PROCESS".to_string(),
+            "SCRIPT".to_string(),
+            "COMMAND".to_string(),
+            "NATIVE_WORKLOAD".to_string(),
+        ],
+        capabilities: vec!["process".to_string(), "native_workload".to_string()],
     }
 }
 
@@ -173,6 +321,50 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn decode_task_cancel(data: &[u8]) -> io::Result<u64> {
+    if data.len() != 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid task cancellation payload",
+        ));
+    }
+    Ok(u64::from_le_bytes(data.try_into().unwrap()))
+}
+
+fn cpu_sample() -> Option<(u64, u64)> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let line = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .next()?
+        .to_string();
+    let values: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse().ok())
+        .collect();
+    if values.len() < 4 {
+        return None;
+    }
+    let idle = values[3].saturating_add(*values.get(4).unwrap_or(&0));
+    let total: u64 = values.iter().copied().sum();
+    Some((total.saturating_sub(idle), total))
+}
+
+fn available_memory_gb() -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix("MemAvailable:")?;
+        let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kb / 1024 / 1024)
+    })
 }
 
 fn resource_failure_result(node: &NodeInfo, task: &Task) -> TaskResult {
@@ -249,6 +441,7 @@ fn run_connection(
     node: &NodeInfo,
     executor: &WorkerExecutor,
     reconnected: bool,
+    started_at: Instant,
 ) -> io::Result<()> {
     println!(
         "[nodren-worker] connecting controller={}",
@@ -267,7 +460,9 @@ fn run_connection(
     let heartbeat_writer = Arc::clone(&writer);
     let heartbeat_stop = Arc::clone(&stop_heartbeat);
     let heartbeat_error = Arc::clone(&connection_failed);
+    let active_tasks = executor.active_tasks_counter();
     let heartbeat_thread = thread::spawn(move || {
+        let mut previous_cpu = None;
         loop {
             for _ in 0..50 {
                 if heartbeat_stop.load(Ordering::Acquire) {
@@ -276,7 +471,23 @@ fn run_connection(
                 thread::sleep(Duration::from_millis(100));
             }
 
-            let payload = encode_heartbeat(now_millis());
+            let cpu_percent = cpu_sample().and_then(|current| {
+                let previous = previous_cpu.replace(current)?;
+                let busy_delta = current.0.saturating_sub(previous.0);
+                let total_delta = current.1.saturating_sub(previous.1);
+                if total_delta == 0 {
+                    None
+                } else {
+                    Some((busy_delta as f64 / total_delta as f64) * 100.0)
+                }
+            });
+            let payload = encode_heartbeat(
+                now_millis(),
+                started_at.elapsed().as_secs(),
+                active_tasks.load(Ordering::Acquire),
+                cpu_percent,
+                available_memory_gb(),
+            );
             let mut stream = match heartbeat_writer.lock() {
                 Ok(stream) => stream,
                 Err(_) => return,
@@ -345,7 +556,7 @@ fn run_connection(
                         &mut *stream,
                         MessageType::HeartbeatAck,
                         request_id,
-                        &encode_heartbeat(now_millis()),
+                        &encode_heartbeat(now_millis(), 0, 0, None, None),
                     )?;
                 }
                 MessageType::TaskBatch => {
@@ -359,12 +570,49 @@ fn run_connection(
                         )?;
                     }
                 }
+                MessageType::TaskSubmit => {
+                    let task = decode_general_task(&payload)?;
+                    executor.submit_general(
+                        task,
+                        request_id,
+                        node.clone(),
+                        Arc::clone(&writer),
+                        Arc::clone(&connection_failed),
+                    )?;
+                }
+                MessageType::TaskCancel => {
+                    let task_id = decode_task_cancel(&payload)?;
+                    if !executor.cancel_general(task_id) {
+                        eprintln!("[nodren-worker] task cancellation ignored task_id={task_id}");
+                    }
+                }
+                MessageType::ArtifactBegin => {
+                    if let Err(error) = executor.begin_artifact(decode_artifact_begin(&payload)?) {
+                        eprintln!("[nodren-worker] artifact begin failed: {error}");
+                    }
+                }
+                MessageType::ArtifactChunk => {
+                    if let Err(error) = executor.append_artifact(decode_artifact_chunk(&payload)?) {
+                        eprintln!("[nodren-worker] artifact chunk failed: {error}");
+                    }
+                }
+                MessageType::ArtifactEnd => {
+                    let (task_id, artifact_id) = decode_artifact_end(&payload)?;
+                    if let Err(error) = executor.finish_artifact(task_id, artifact_id) {
+                        eprintln!("[nodren-worker] artifact finalize failed: {error}");
+                    }
+                }
                 MessageType::Error => {
                     eprintln!("[nodren-worker] controller error");
                 }
                 MessageType::Goodbye => break Ok(()),
                 MessageType::Ready | MessageType::Hello => {}
-                MessageType::Register | MessageType::TaskResultBatch => {}
+                MessageType::Register
+                | MessageType::TaskResultBatch
+                | MessageType::TaskAck
+                | MessageType::TaskState
+                | MessageType::TaskResult
+                | MessageType::Capabilities => {}
             }
         }
     })();
@@ -378,6 +626,7 @@ fn run(config: WorkerConfig) -> io::Result<()> {
     let node = local_node_info(&config);
     let core = Arc::new(NativeCore::load()?);
     let executor = WorkerExecutor::new(node.clone(), Arc::clone(&core));
+    let started_at = Instant::now();
     println!(
         "[nodren-worker] id={} cpu={} ram={}GB gpu={}",
         node.id, node.cpu_cores, node.ram_gb, node.gpu.model
@@ -386,7 +635,7 @@ fn run(config: WorkerConfig) -> io::Result<()> {
     let mut reconnected = false;
     let mut backoff = Duration::from_millis(250);
     loop {
-        match run_connection(&config, &node, &executor, reconnected) {
+        match run_connection(&config, &node, &executor, reconnected, started_at) {
             Ok(()) => return Ok(()),
             Err(error) => {
                 eprintln!("[nodren-worker] connection lost: {error}");
@@ -417,6 +666,6 @@ fn main() {
 
 fn print_help() {
     println!(
-        "Nodren Worker 0.2.0\n\nUsage:\n    nodren-worker.exe --controller <host:port> [options]\n\nOptions:\n    --controller <host:port>    Controller TCP address\n    --id <worker-id>            Stable worker identity\n    --cpu-cores <count>         Override discovered CPU capacity\n    --ram-gb <count>            Override discovered RAM capacity\n    --gpu-vendor <name>         Advertised GPU vendor\n    --gpu-model <name>          Advertised GPU model\n    --gpu-vram-gb <count>       Advertised GPU memory\n\nEnvironment:\n    NODREN_CONTROLLER_ADDR       Fallback Controller TCP address\n    NODREN_WORKER_ID             Fallback worker identity\n"
+        "Nodren Worker 0.2.0\n\nUsage:\n    nodren-worker.exe --controller <host:port> [options]\n\nOptions:\n    --controller <host:port>    Controller TCP address\n    --id <worker-id>            Stable worker identity\n    --cpu-cores <count>         Override discovered CPU capacity\n    --ram-gb <count>            Override discovered RAM capacity\n    --gpu-vendor <name>         Advertised GPU vendor\n    --gpu-model <name>          Advertised GPU model\n    --gpu-vram-gb <count>       Advertised GPU memory\n    --gpu-count <count>         Advertised GPU count\n\nNVIDIA metadata is discovered with nvidia-smi when available; explicit GPU\noptions override discovered values.\n\nEnvironment:\n    NODREN_CONTROLLER_ADDR       Fallback Controller TCP address\n    NODREN_WORKER_ID             Fallback worker identity\n"
     );
 }

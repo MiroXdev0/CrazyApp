@@ -111,6 +111,10 @@ def submit_job(base_url: str, command: str, payload: bytes, requirements: dict) 
     )
 
 
+def submit_task(base_url: str, task: dict) -> dict:
+    return request("POST", f"{base_url}/v1/tasks", {"task": task})
+
+
 def wait_for_job(base_url: str, job_id: str, description: str, timeout: float = 20) -> dict:
     def terminal_job():
         state = request("GET", f"{base_url}/v1/jobs/{job_id}")
@@ -139,16 +143,16 @@ def main() -> int:
         controller_env.update(
             NODREN_NODE_ADDR=f"127.0.0.1:{tcp_port}",
             NODREN_HTTP_ADDR=f"127.0.0.1:{http_port}",
+            NODREN_STATE_FILE=str(Path(temporary_directory.name) / "controller-state.json"),
         )
-        processes.append(
-            subprocess.Popen(
+        controller_process = subprocess.Popen(
                 [str(controller_binary)],
                 cwd=CONTROLLER_DIR,
                 env=controller_env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-            )
         )
+        processes.append(controller_process)
         wait_for(lambda: request("GET", f"{base_url}/health")["status"] == "ok", 15, "controller health")
 
         worker_a = subprocess.Popen(
@@ -209,6 +213,34 @@ def main() -> int:
             "worker heartbeat acknowledgement",
         )
 
+        # A queued job must survive a Controller restart and be reconciled
+        # when the existing workers reconnect.
+        request("POST", f"{base_url}/v1/nodes/INTEGRATION-A/pause")
+        request("POST", f"{base_url}/v1/nodes/INTEGRATION-B/pause")
+        recovery_job = submit_job(
+            base_url,
+            "sum",
+            bytes([9, 10, 11]),
+            {"cpu_cores": 1, "ram_gb": 1, "gpu_required": False},
+        )
+        if recovery_job["status"] != "QUEUED":
+            raise RuntimeError(f"expected restart test job to start queued: {recovery_job}")
+        controller_process.terminate()
+        controller_process.wait(timeout=5)
+        processes.remove(controller_process)
+        controller_process = subprocess.Popen(
+            [str(controller_binary)],
+            cwd=CONTROLLER_DIR,
+            env=controller_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        processes.append(controller_process)
+        wait_for(lambda: request("GET", f"{base_url}/health")["status"] == "ok", 15, "Controller restart")
+        recovered_job = wait_for_job(base_url, recovery_job["id"], "persisted job recovery")
+        if recovered_job["status"] != "COMPLETED" or recovered_job["result"]["value"] != 30:
+            raise RuntimeError(f"persisted job did not recover: {recovered_job}")
+
         cli_environment = os.environ.copy()
         cli_environment["NODREN_HTTP_ADDR"] = f"127.0.0.1:{http_port}"
         cli_status = run_cli(controller_binary, cli_environment, "status")
@@ -248,6 +280,41 @@ def main() -> int:
         if cli_dot.returncode != 0 or "Result       32" not in cli_dot.stdout:
             raise RuntimeError(f"CLI dot_product failed: {cli_dot.returncode} {cli_dot.stdout} {cli_dot.stderr}")
 
+        small_requirements = {"cpu_cores": 1, "ram_gb": 1, "gpu_required": False}
+        process_executable, process_arguments = (
+            ("cmd.exe", ["/C", "echo %NODREN_TEST_VALUE%"]) if os.name == "nt"
+            else ("sh", ["-c", "printf %s \"$NODREN_TEST_VALUE\""])
+        )
+        process_task = submit_task(
+            base_url,
+            {
+                "type": "PROCESS",
+                "version": "1",
+                "executable": process_executable,
+                "arguments": process_arguments,
+                "environment": {"NODREN_TEST_VALUE": "process-ok"},
+                "requirements": small_requirements,
+                "stdout_limit_bytes": 4096,
+                "stderr_limit_bytes": 4096,
+            },
+        )
+        process_result = wait_for(
+            lambda: (
+                state
+                if (state := request("GET", f"{base_url}/v1/tasks/{process_task['id']}"))["status"]
+                in {"COMPLETED", "FAILED", "TIMED_OUT"}
+                else None
+            ),
+            15,
+            "general process task completion",
+        )
+        if (
+            process_result["status"] != "COMPLETED"
+            or base64.b64decode(process_result["execution_result"]["stdout_base64"]).decode().strip() != "process-ok"
+            or process_result["execution_result"].get("exit_code") != 0
+        ):
+            raise RuntimeError(f"general process execution failed: {process_result}")
+
         cli_unknown = run_cli(controller_binary, cli_environment, "run", "unknown_workload", "payload")
         if (
             cli_unknown.returncode == 0
@@ -270,7 +337,6 @@ def main() -> int:
         if cli_unavailable.returncode == 0 or "Controller unreachable" not in cli_unavailable.stderr:
             raise RuntimeError(f"CLI unavailable-controller handling failed: {cli_unavailable.returncode} {cli_unavailable.stdout} {cli_unavailable.stderr}")
 
-        small_requirements = {"cpu_cores": 1, "ram_gb": 1, "gpu_required": False}
         concurrent_requirements = {"cpu_cores": 1, "ram_gb": 8, "gpu_required": False}
         concurrent_payload = bytes([1]) * 12_000_000
         with ThreadPoolExecutor(max_workers=2) as pool:

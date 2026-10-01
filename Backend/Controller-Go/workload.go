@@ -155,16 +155,24 @@ func workloadDefinitionFor(command string) (workloadDefinition, bool) {
 }
 
 func partitionSizeFor(totalUnits uint64, eligibleWorkers int) uint64 {
+	return partitionSizeForCapacity(totalUnits, float64(eligibleWorkers))
+}
+
+// partitionSizeForCapacity turns observed worker capacity into a target
+// partition count. More available/experienced capacity creates more smaller
+// partitions, allowing idle workers to participate without changing the
+// workload's merge semantics.
+func partitionSizeForCapacity(totalUnits uint64, capacity float64) uint64 {
 	if totalUnits == 0 {
 		return 1
 	}
 	if totalUnits <= minimumDistributedUnits {
 		return totalUnits
 	}
-	if eligibleWorkers <= 1 {
+	if capacity <= 1 {
 		return maximumPartitionUnits
 	}
-	targetPartitions := uint64(eligibleWorkers * 4)
+	targetPartitions := uint64(capacity * 4)
 	if targetPartitions == 0 {
 		targetPartitions = 1
 	}

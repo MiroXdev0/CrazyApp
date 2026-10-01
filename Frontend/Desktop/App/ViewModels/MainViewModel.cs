@@ -19,12 +19,13 @@ public partial class MainViewModel : ViewModelBase
         _settings = NodrenSettingsStore.Load();
         _controllerUrl = _settings.ControllerUrl;
         _api = new NodrenApiClient(_controllerUrl);
-        _ = PollLoopAsync();
+        _ = SynchronizationLoopAsync();
     }
 
     public ObservableCollection<NodeRecord> Workers { get; } = [];
     public ObservableCollection<Job> Jobs { get; } = [];
     public IReadOnlyList<string> Workloads { get; } = ["sum", "xor", "dot_product"];
+    public IReadOnlyList<string> TaskTypes { get; } = ["NATIVE_WORKLOAD", "PROCESS", "COMMAND", "SCRIPT"];
 
     [ObservableProperty]
     private string _controllerUrl;
@@ -49,6 +50,21 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     private string _selectedWorkload = "sum";
+
+    [ObservableProperty]
+    private string _selectedTaskType = "NATIVE_WORKLOAD";
+
+    [ObservableProperty]
+    private string _executable = string.Empty;
+
+    [ObservableProperty]
+    private string _scriptRuntime = "python";
+
+    [ObservableProperty]
+    private string _scriptPath = string.Empty;
+
+    [ObservableProperty]
+    private string _generalArguments = string.Empty;
 
     [ObservableProperty]
     private bool _isAutomaticDistribution = true;
@@ -79,6 +95,9 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     private Job? _selectedJob;
+
+    [ObservableProperty]
+    private NodeRecord? _selectedWorker;
 
     [ObservableProperty]
     private string _jobDetails = "Select a job to inspect its details.";
@@ -168,6 +187,11 @@ public partial class MainViewModel : ViewModelBase
         {
             ErrorMessage = string.Empty;
             RunResult = string.Empty;
+            if (SelectedTaskType != "NATIVE_WORKLOAD")
+            {
+                await RunGeneralTaskAsync();
+                return;
+            }
             var payload = BuildPayload(SelectedWorkload, Arguments, LeftVector, RightVector);
             RunStatus = "Submitting workload...";
             var submitted = await _api.SubmitJobAsync(new JobRequest
@@ -202,14 +226,144 @@ public partial class MainViewModel : ViewModelBase
         }
     }
 
+    private async Task RunGeneralTaskAsync()
+    {
+        var arguments = GeneralArguments.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        var task = new GeneralTaskSpec
+        {
+            Type = SelectedTaskType,
+            Version = "1",
+            Arguments = arguments,
+            Requirements = new ResourceRequirements { CpuCores = 1, RamGb = 1 },
+            TimeoutMs = 60_000,
+        };
+        if (SelectedTaskType == "SCRIPT")
+        {
+            task.Runtime = ScriptRuntime.Trim();
+            task.Script = ScriptPath.Trim();
+            if (task.Runtime.Length == 0 || task.Script.Length == 0)
+            {
+                throw new FormatException("Script runtime and script path are required.");
+            }
+        }
+        else
+        {
+            task.Executable = Executable.Trim();
+            if (task.Executable.Length == 0)
+            {
+                throw new FormatException("An executable path or command is required.");
+            }
+        }
+
+        RunStatus = "Submitting task...";
+        var submitted = await _api.SubmitTaskAsync(new TaskRequest { Task = task });
+        RunStatus = $"Task {submitted.Id} · {submitted.Status} · waiting for result";
+        var completed = await _api.WaitForJobAsync(submitted.Id, TimeSpan.FromSeconds(90));
+        var workerDisplay = completed.NodeIds.Count > 0 ? string.Join(", ", completed.NodeIds) : DisplayOrDash(completed.NodeId);
+        RunStatus = $"Task {completed.Id} · {completed.Status} · worker(s): {workerDisplay}";
+        if (completed.Execution is { } execution)
+        {
+            var stdout = DecodeOutput(execution.StdoutBase64);
+            var stderr = DecodeOutput(execution.StderrBase64);
+            RunResult = $"Exit: {execution.ExitCode?.ToString() ?? "-"} · {execution.DurationUs} us\nstdout: {stdout}\nstderr: {stderr}";
+        }
+        await RefreshAsync();
+    }
+
+    private static string DecodeOutput(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+        try
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(value));
+        }
+        catch (FormatException)
+        {
+            return "<invalid base64 output>";
+        }
+    }
+
+    [RelayCommand]
+    private Task PingWorkerAsync() => WorkerActionAsync("ping");
+
+    [RelayCommand]
+    private Task PauseWorkerAsync() => WorkerActionAsync("pause");
+
+    [RelayCommand]
+    private Task ResumeWorkerAsync() => WorkerActionAsync("resume");
+
+    [RelayCommand]
+    private Task RemoveWorkerAsync() => WorkerActionAsync("remove");
+
+    private async Task WorkerActionAsync(string action)
+    {
+        if (SelectedWorker is null)
+        {
+            ErrorMessage = "Select a worker first.";
+            return;
+        }
+
+        try
+        {
+            ErrorMessage = string.Empty;
+            SelectedWorker = await _api.WorkerActionAsync(SelectedWorker.Info.Id, action);
+            await RefreshAsync();
+        }
+        catch (Exception exception) when (exception is NodrenApiException or HttpRequestException or TaskCanceledException)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private Task CancelJobAsync() => JobActionAsync("cancel");
+
+    [RelayCommand]
+    private Task PauseJobAsync() => JobActionAsync("pause");
+
+    [RelayCommand]
+    private Task ResumeJobAsync() => JobActionAsync("resume");
+
+    private async Task JobActionAsync(string action)
+    {
+        if (SelectedJob is null)
+        {
+            ErrorMessage = "Select a job first.";
+            return;
+        }
+
+        try
+        {
+            ErrorMessage = string.Empty;
+            SelectedJob = await _api.JobActionAsync(SelectedJob.Id, action);
+            await RefreshAsync();
+        }
+        catch (Exception exception) when (exception is NodrenApiException or HttpRequestException or TaskCanceledException)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
     partial void OnSelectedJobChanged(Job? value) => RefreshSelectedJobDetails();
 
-    private async Task PollLoopAsync()
+    private async Task SynchronizationLoopAsync()
     {
         while (true)
         {
-            await RefreshAsync();
-            await Task.Delay(TimeSpan.FromSeconds(5));
+            try
+            {
+                await RefreshAsync();
+                await _api.ListenForEventsAsync(RefreshAsync);
+            }
+            catch (Exception exception) when (exception is NodrenApiException or HttpRequestException or TaskCanceledException or IOException)
+            {
+                ControllerStatus = "○ Controller Offline";
+                ErrorMessage = exception.Message;
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            }
         }
     }
 
@@ -224,8 +378,10 @@ public partial class MainViewModel : ViewModelBase
         var running = Jobs.Count(job => job.Status == "RUNNING");
         var queued = Jobs.Count(job => job.Status == "QUEUED");
         var completed = Jobs.Count(job => job.Status == "COMPLETED");
+        var paused = Jobs.Count(job => job.Status == "PAUSED");
         var failed = Jobs.Count(job => job.Status == "FAILED");
-        JobSummary = $"Jobs: {running} running · {queued} queued · {completed} completed · {failed} failed";
+        var cancelled = Jobs.Count(job => job.Status == "CANCELLED");
+        JobSummary = $"Jobs: {running} running · {queued} queued · {paused} paused · {completed} completed · {failed} failed · {cancelled} cancelled";
     }
 
     private void RefreshSelectedJobDetails()
@@ -241,7 +397,8 @@ public partial class MainViewModel : ViewModelBase
         var partitionableDesc = distribution.Partitionable ? "Yes (Adaptive)" : "No (Single task)";
         var workerDisplay = SelectedJob.NodeIds.Count > 0 ? string.Join(", ", SelectedJob.NodeIds) : DisplayOrDash(SelectedJob.NodeId);
         DistributionSummary = $"{distribution.Mode} · {distribution.CompletedPartitions}/{distribution.TotalPartitions} partitions · {distribution.CompletedUnits}/{distribution.TotalUnits} units ({distribution.ProgressPercent:0.#}%)";
-        JobDetails = $"Job ID: {SelectedJob.Id}\nWorkload: {SelectedJob.Command}\nState: {SelectedJob.Status}\nPartitionable: {partitionableDesc}\nDistribution: {distribution.Mode}\nPartitions: {distribution.CompletedPartitions}/{distribution.TotalPartitions} (Running: {distribution.RunningPartitions}, Pending: {distribution.PendingPartitions}, Requeued: {distribution.RequeuedPartitions}, Failed: {distribution.FailedPartitions})\nUnits: {distribution.CompletedUnits}/{distribution.TotalUnits} ({distribution.ProgressPercent:0.#}%)\nWorkers: {workerDisplay}\nCPU: {SelectedJob.Requirements.CpuCores}\nRAM: {SelectedJob.Requirements.RamGb} GB\nGPU required: {SelectedJob.Requirements.GpuRequired}\nResult: {result?.Value.ToString() ?? "-"}\nError: {DisplayOrDash(result?.Error)}";
+        var reasons = SelectedJob.Partitions.Where(partition => !string.IsNullOrWhiteSpace(partition.AssignmentReason)).Take(3).Select(partition => $"{partition.Id}: {partition.AssignmentReason}");
+        JobDetails = $"Job ID: {SelectedJob.Id}\nWorkload: {SelectedJob.Command}\nState: {SelectedJob.Status}\nPartitionable: {partitionableDesc}\nDistribution: {distribution.Mode}\nPartitions: {distribution.CompletedPartitions}/{distribution.TotalPartitions} (Running: {distribution.RunningPartitions}, Pending: {distribution.PendingPartitions}, Requeued: {distribution.RequeuedPartitions}, Failed: {distribution.FailedPartitions})\nUnits: {distribution.CompletedUnits}/{distribution.TotalUnits} ({distribution.ProgressPercent:0.#}%)\nWorkers: {workerDisplay}\nQueue time: {SelectedJob.QueueTimeMs} ms\nElapsed: {SelectedJob.ElapsedMs} ms\nCPU: {SelectedJob.Requirements.CpuCores}\nRAM: {SelectedJob.Requirements.RamGb} GB\nGPU required: {SelectedJob.Requirements.GpuRequired}\nScheduler: {string.Join(" | ", reasons)}\nResult: {result?.Value.ToString() ?? "-"}\nError: {DisplayOrDash(result?.Error)}";
     }
 
     partial void OnIsAutomaticDistributionChanged(bool value)

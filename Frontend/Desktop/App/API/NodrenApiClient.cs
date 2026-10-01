@@ -63,8 +63,79 @@ public sealed class NodrenApiClient : IDisposable
     public Task<List<Job>> GetJobsAsync(CancellationToken cancellationToken = default)
         => GetAsync<List<Job>>("v1/jobs", cancellationToken);
 
+    public Task<List<Job>> GetTasksAsync(CancellationToken cancellationToken = default)
+        => GetAsync<List<Job>>("v1/tasks", cancellationToken);
+
     public Task<Job> GetJobAsync(string jobId, CancellationToken cancellationToken = default)
         => GetAsync<Job>($"v1/jobs/{Uri.EscapeDataString(jobId)}", cancellationToken);
+
+    public Task<NodeRecord> WorkerActionAsync(string workerId, string action, CancellationToken cancellationToken = default)
+        => PostAsync<NodeRecord>($"v1/nodes/{Uri.EscapeDataString(workerId)}/{action}", cancellationToken);
+
+    public Task<Job> JobActionAsync(string jobId, string action, CancellationToken cancellationToken = default)
+        => PostAsync<Job>($"v1/jobs/{Uri.EscapeDataString(jobId)}/{action}", cancellationToken);
+
+    public async Task<Job> UpdateDistributionAsync(string jobId, DistributionUpdateRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.PutAsJsonAsync($"v1/jobs/{Uri.EscapeDataString(jobId)}/distribution", request, JsonOptions, cancellationToken);
+            return await ReadResponseAsync<Job>(response, cancellationToken);
+        }
+        catch (NodrenApiException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
+        {
+            throw Unavailable(exception);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new NodrenApiException($"Controller request timed out: {ControllerUri}", null, exception);
+        }
+    }
+
+    public async Task ListenForEventsAsync(Func<Task> onEvent, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync("v1/events", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = (await response.Content.ReadAsStringAsync(cancellationToken)).Trim();
+                throw new NodrenApiException($"Controller returned HTTP {(int)response.StatusCode}: {(string.IsNullOrWhiteSpace(body) ? response.ReasonPhrase : body)}", response.StatusCode);
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(stream);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (line is null)
+                {
+                    return;
+                }
+
+                if (line.StartsWith("data:", StringComparison.Ordinal))
+                {
+                    await onEvent();
+                }
+            }
+        }
+        catch (NodrenApiException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
+        {
+            throw Unavailable(exception);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new NodrenApiException($"Controller event stream timed out: {ControllerUri}", null, exception);
+        }
+    }
 
     public async Task<Job> SubmitJobAsync(JobRequest request, CancellationToken cancellationToken = default)
     {
@@ -87,13 +158,37 @@ public sealed class NodrenApiClient : IDisposable
         }
     }
 
+    public async Task<Job> SubmitTaskAsync(TaskRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync("v1/tasks", request, JsonOptions, cancellationToken);
+            return await ReadResponseAsync<Job>(response, cancellationToken);
+        }
+        catch (NodrenApiException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
+        {
+            throw Unavailable(exception);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new NodrenApiException($"Controller request timed out: {ControllerUri}", null, exception);
+        }
+    }
+
+    public Task<Job> TaskActionAsync(string taskId, string action, CancellationToken cancellationToken = default)
+        => PostAsync<Job>($"v1/tasks/{Uri.EscapeDataString(taskId)}/{action}", cancellationToken);
+
     public async Task<Job> WaitForJobAsync(string jobId, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (true)
         {
             var job = await GetJobAsync(jobId, cancellationToken);
-            if (job.Status is "COMPLETED" or "FAILED")
+            if (job.Status is "COMPLETED" or "FAILED" or "CANCELLED" or "TIMED_OUT")
             {
                 return job;
             }
@@ -112,6 +207,27 @@ public sealed class NodrenApiClient : IDisposable
         try
         {
             using var response = await _httpClient.GetAsync(path, cancellationToken);
+            return await ReadResponseAsync<T>(response, cancellationToken);
+        }
+        catch (NodrenApiException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
+        {
+            throw Unavailable(exception);
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new NodrenApiException($"Controller request timed out: {ControllerUri}", null, exception);
+        }
+    }
+
+    private async Task<T> PostAsync<T>(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _httpClient.PostAsync(path, null, cancellationToken);
             return await ReadResponseAsync<T>(response, cancellationToken);
         }
         catch (NodrenApiException)

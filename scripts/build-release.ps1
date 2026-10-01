@@ -4,7 +4,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $root "release"
 $controller = Join-Path $root "Backend\Controller-Go"
 $worker = Join-Path $root "Backend\Worker-Rust"
-$uiProject = Join-Path $root "Frontend\Desktop\App\App.csproj"
+$cli = Join-Path $root "CLI\Rust"
 
 if (Test-Path -LiteralPath $release) {
     Remove-Item -LiteralPath $release -Recurse -Force
@@ -29,31 +29,37 @@ if (-not (Test-Path -LiteralPath $workerBinary)) {
 }
 Copy-Item -LiteralPath $workerBinary -Destination (Join-Path $release "nodren-worker.exe")
 
-$core = Get-ChildItem -LiteralPath (Join-Path $worker "target\release\build") -Filter "nodren_core.dll" -Recurse -File | Select-Object -First 1
+$core = Get-ChildItem -LiteralPath (Join-Path $worker "target\release\build") -Filter "nodren-core.dll" -Recurse -File | Select-Object -First 1
 if ($null -eq $core) {
     throw "Native Core release library was not produced"
 }
-Copy-Item -LiteralPath $core.FullName -Destination (Join-Path $release "nodren_core.dll")
+Copy-Item -LiteralPath $core.FullName -Destination (Join-Path $release "nodren-core.dll")
 
-$uiPublish = Join-Path $release ".ui-publish"
-dotnet publish $uiProject --configuration Release --runtime win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:PublishTrimmed=false --output $uiPublish
-if ($LASTEXITCODE -ne 0) { throw "Desktop UI release build failed" }
-
-$uiBinary = Join-Path $uiPublish "nodren-ui.exe"
-if (-not (Test-Path -LiteralPath $uiBinary)) {
-    throw "Desktop UI release binary was not produced: $uiBinary"
+Push-Location $cli
+try {
+    cargo build --release --bin nodren --manifest-path (Join-Path $cli "Cargo.toml")
+    if ($LASTEXITCODE -ne 0) { throw "CLI release build failed" }
 }
-Get-ChildItem -LiteralPath $uiPublish -File |
-    Where-Object { $_.Extension -notin @('.pdb', '.xml') } |
-    Copy-Item -Destination $release -Force
-Remove-Item -LiteralPath $uiPublish -Recurse -Force
+finally {
+    Pop-Location
+}
 
-foreach ($artifact in @('nodren.exe', 'nodren-worker.exe', 'nodren-ui.exe', 'nodren_core.dll')) {
+$cliBinary = Join-Path $cli "target\release\nodren.exe"
+if (-not (Test-Path -LiteralPath $cliBinary)) {
+    throw "CLI release binary was not produced: $cliBinary"
+}
+Copy-Item -LiteralPath $cliBinary -Destination (Join-Path $release "nodren.exe-CLI")
+
+foreach ($artifact in @('nodren.exe', 'nodren.exe-CLI', 'nodren-worker.exe', 'nodren-core.dll')) {
     if (-not (Test-Path -LiteralPath (Join-Path $release $artifact))) {
         throw "Required release artifact is missing: $artifact"
     }
+}
+
+$actual = @(Get-ChildItem -LiteralPath $release -File | Select-Object -ExpandProperty Name | Sort-Object)
+$expected = @('nodren-core.dll', 'nodren-worker.exe', 'nodren.exe', 'nodren.exe-CLI') | Sort-Object
+if (@(Compare-Object -ReferenceObject $expected -DifferenceObject $actual).Count -ne 0) {
+    throw "Release directory contains files other than the four required Windows artifacts"
 }
 
 Write-Host "Release artifacts:"

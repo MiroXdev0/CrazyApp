@@ -1,5 +1,8 @@
-use crate::api::{ApiError, Client, JobRequest, ResourceRequirements};
-use crate::cli::Command;
+use crate::api::{
+    ApiError, Client, DistributionRequest, GeneralTaskSpec, JobRequest, ResourceRequirements,
+    RetryPolicy, TaskRequest,
+};
+use crate::cli::{Command, DistributionCommand, JobCommand, TaskCommand, WorkerCommand};
 use crate::system::platform;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -37,8 +40,16 @@ pub fn execute(command: Command) -> Result<(), CommandError> {
         Command::Status => status(),
         Command::Check(device) => check(device),
         Command::Devices => devices(),
+        Command::Workers(command) => workers(command),
         Command::Run(args) => run(args),
         Command::Jobs => jobs(),
+        Command::JobControl(command) => job_control(command),
+        Command::Tasks(command) => task_control(command),
+        Command::Distribution(command) => distribution(command),
+        Command::Events => {
+            client().events()?;
+            Ok(())
+        }
         Command::Logs(args) => logs(args),
         Command::Ping(device) => ping(device),
         Command::Info(device) => info(device),
@@ -59,31 +70,281 @@ fn client() -> Client {
     Client::from_environment()
 }
 
+fn workers(command: WorkerCommand) -> Result<(), CommandError> {
+    match command {
+        WorkerCommand::List => devices(),
+        WorkerCommand::Info(id) => info(Some(id)),
+        WorkerCommand::Ping(id) => ping(id),
+        WorkerCommand::Pause(id) => worker_action(&id, "pause"),
+        WorkerCommand::Resume(id) => worker_action(&id, "resume"),
+        WorkerCommand::Remove(id) => worker_action(&id, "remove"),
+        WorkerCommand::Stats(Some(id)) => print_worker_stats(&client().worker_stats(&id)?),
+        WorkerCommand::Stats(None) => {
+            for node in client().nodes()? {
+                print_worker_stats(&client().worker_stats(&node.info.id)?);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn worker_action(id: &str, action: &str) -> Result<(), CommandError> {
+    let node = client().worker_action(id, action)?;
+    println!("Worker {}: {}", node.info.id, node.state);
+    Ok(())
+}
+
+fn job_control(command: JobCommand) -> Result<(), CommandError> {
+    match command {
+        JobCommand::List => jobs(),
+        JobCommand::Run(args) => run(args),
+        JobCommand::Info(id) => {
+            let job = client().job(&id)?;
+            print_job(&job);
+            Ok(())
+        }
+        JobCommand::Cancel(id) => job_action(&id, "cancel"),
+        JobCommand::Pause(id) => job_action(&id, "pause"),
+        JobCommand::Resume(id) => job_action(&id, "resume"),
+        JobCommand::Stats(id) => {
+            let stats = client().job_stats(&id)?;
+            print_job(&stats.job);
+            println!("Queue time   {} ms", stats.queue_time_ms);
+            println!("Elapsed      {} ms", stats.elapsed_ms);
+            println!(
+                "Active nodes {}",
+                if stats.active_workers.is_empty() {
+                    "-".to_string()
+                } else {
+                    stats.active_workers.join(", ")
+                }
+            );
+            for reason in stats.scheduler_reasons {
+                println!("  {reason}");
+            }
+            Ok(())
+        }
+        JobCommand::Partitions(id) => {
+            for partition in client().job_partitions(&id)? {
+                println!(
+                    "{} index={} units={} state={} node={} attempt={} duration={}us",
+                    partition.id,
+                    partition.index,
+                    partition.units,
+                    partition.state,
+                    partition.node_id,
+                    partition.attempt,
+                    partition.execution_duration_us
+                );
+                if !partition.assignment_reason.is_empty() {
+                    println!("  reason={}", partition.assignment_reason);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn job_action(id: &str, action: &str) -> Result<(), CommandError> {
+    let job = client().job_action(id, action)?;
+    println!("Job {}: {}", job.id, job.status);
+    Ok(())
+}
+
+fn task_control(command: TaskCommand) -> Result<(), CommandError> {
+    match command {
+        TaskCommand::List => {
+            let tasks = client().tasks()?;
+            header("Nodren Tasks");
+            if tasks.is_empty() {
+                println!("No tasks found.");
+            }
+            for task in tasks {
+                println!(
+                    "{}  type={}  state={}  worker={}",
+                    task.id,
+                    task.task
+                        .as_ref()
+                        .map(|value| value.task_type.as_str())
+                        .unwrap_or("-"),
+                    task.status,
+                    if task.node_id.is_empty() {
+                        "-"
+                    } else {
+                        &task.node_id
+                    }
+                );
+            }
+            Ok(())
+        }
+        TaskCommand::Info(id) => {
+            let task = client().task(&id)?;
+            print_task(&task);
+            Ok(())
+        }
+        TaskCommand::Cancel(id) => {
+            let task = client().task_action(&id, "cancel")?;
+            println!("Task {}: {}", task.id, task.status);
+            Ok(())
+        }
+        TaskCommand::Retry(id) => {
+            let task = client().task_action(&id, "retry")?;
+            println!("Task {}: {}", task.id, task.status);
+            Ok(())
+        }
+        TaskCommand::Logs(id) | TaskCommand::Result(id) => {
+            let task = client().task(&id)?;
+            if let Some(result) = task.execution_result {
+                print_task_result(&result);
+            } else {
+                println!("Task {id} has no execution result yet.");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_task(task: &crate::api::Job) {
+    println!("Task ID      {}", task.id);
+    println!("Status       {}", task.status);
+    if let Some(spec) = &task.task {
+        println!("Type         {}", spec.task_type);
+        if !spec.executable.is_empty() {
+            println!("Executable   {}", spec.executable);
+        }
+        if !spec.runtime.is_empty() {
+            println!("Runtime      {}", spec.runtime);
+        }
+        if !spec.script.is_empty() {
+            println!("Script       {}", spec.script);
+        }
+        if !spec.arguments.is_empty() {
+            println!("Arguments    {}", spec.arguments.join(" "));
+        }
+    }
+    if let Some(result) = &task.execution_result {
+        print_task_result(result);
+    }
+}
+
+fn print_task_result(result: &crate::api::GeneralTaskResult) {
+    println!("Execution    {} ({} us)", result.status, result.duration_us);
+    if let Some(exit_code) = result.exit_code {
+        println!("Exit code    {exit_code}");
+    }
+    if !result.error.is_empty() {
+        println!("Error        {} {}", result.error_code, result.error);
+    }
+    if let Ok(stdout) = BASE64.decode(&result.stdout_base64) {
+        if !stdout.is_empty() {
+            println!("Stdout:\n{}", String::from_utf8_lossy(&stdout));
+        }
+    }
+    if let Ok(stderr) = BASE64.decode(&result.stderr_base64) {
+        if !stderr.is_empty() {
+            println!("Stderr:\n{}", String::from_utf8_lossy(&stderr));
+        }
+    }
+    if result.stdout_truncated || result.stderr_truncated {
+        println!(
+            "Output truncated (stdout={} stderr={})",
+            result.stdout_truncated, result.stderr_truncated
+        );
+    }
+}
+
+fn distribution(command: DistributionCommand) -> Result<(), CommandError> {
+    match command {
+        DistributionCommand::Show(Some(id)) => {
+            let job = client().job(&id)?;
+            println!(
+                "Job {}\nMode: {}",
+                job.id,
+                job.distribution.mode.to_ascii_uppercase()
+            );
+            for (worker, percent) in job.distribution.manual_allocations {
+                println!("{worker}\t{percent}%");
+            }
+            Ok(())
+        }
+        DistributionCommand::Show(None) => {
+            for job in client().jobs()? {
+                println!(
+                    "{}  mode={}  progress={:.2}%",
+                    job.id, job.distribution.mode, job.distribution.progress_percent
+                );
+            }
+            Ok(())
+        }
+        DistributionCommand::Auto(id) => {
+            let job = client().update_distribution(
+                &id,
+                &DistributionRequest {
+                    mode: "automatic".into(),
+                    manual_allocations: None,
+                },
+            )?;
+            println!("Job {} distribution: AUTOMATIC", job.id);
+            Ok(())
+        }
+        DistributionCommand::Set(id, values) => {
+            let allocations = parse_allocations(&values)?;
+            let job = client().update_distribution(
+                &id,
+                &DistributionRequest {
+                    mode: "manual".into(),
+                    manual_allocations: Some(allocations),
+                },
+            )?;
+            println!("Job {} distribution: MANUAL", job.id);
+            Ok(())
+        }
+    }
+}
+
+fn parse_allocations(
+    values: &[String],
+) -> Result<std::collections::HashMap<String, u8>, CommandError> {
+    let mut allocations = std::collections::HashMap::new();
+    for value in values {
+        for entry in value.split(',') {
+            let (worker, percent) = entry.split_once('=').ok_or_else(|| {
+                CommandError::Usage(format!(
+                    "invalid allocation '{entry}'; expected worker=percent"
+                ))
+            })?;
+            let percent = percent.parse::<u8>().map_err(|_| {
+                CommandError::Usage(format!("invalid allocation percentage '{percent}'"))
+            })?;
+            if percent > 100 || worker.trim().is_empty() {
+                return Err(CommandError::Usage(format!("invalid allocation '{entry}'")));
+            }
+            allocations.insert(worker.trim().to_string(), percent);
+        }
+    }
+    Ok(allocations)
+}
+
 // ---------------------------------------------------------
 // Service lifecycle
 // ---------------------------------------------------------
 
 fn start() -> Result<(), CommandError> {
-    header("Starting Nodren");
-    println!("[INFO] Platform: {}", platform::name());
-    println!("[INFO] The CLI does not start or supervise Controller/Worker processes yet.");
-    client().health()?;
-    println!("[OK] Controller is already reachable; no local processes were started.");
-    Ok(())
+    Err(CommandError::Usage(
+        "The Rust CLI does not supervise local processes; run the Controller entrypoint or use a process manager.".to_string(),
+    ))
 }
 
 fn stop() -> Result<(), CommandError> {
-    header("Stopping Nodren");
-    println!("[INFO] Cluster lifecycle management is not implemented by this CLI yet.");
-    println!("[INFO] No Controller or Worker processes were stopped.");
-    Ok(())
+    Err(CommandError::Usage(
+        "Controller/Worker process lifecycle is local-process managed and is not exposed by the HTTP API.".to_string(),
+    ))
 }
 
 fn restart() -> Result<(), CommandError> {
-    header("Restarting Nodren");
-    println!("[INFO] Cluster lifecycle management is not implemented by this CLI yet.");
-    println!("[INFO] No Controller or Worker processes were restarted.");
-    Ok(())
+    Err(CommandError::Usage(
+        "Controller/Worker process lifecycle is local-process managed and is not exposed by the HTTP API.".to_string(),
+    ))
 }
 
 // ---------------------------------------------------------
@@ -216,6 +477,25 @@ fn devices() -> Result<(), CommandError> {
     Ok(())
 }
 
+fn print_worker_stats(stats: &crate::api::WorkerStats) -> Result<(), CommandError> {
+    let node = &stats.node;
+    println!(
+        "Worker {} state={} capacity={:.2} telemetry_age={}ms CPU={:.1}% active_tasks={} throughput={:.2} units/s factor={:.2}",
+        node.info.id,
+        node.state,
+        stats.scheduler_weight,
+        stats.telemetry_age_ms,
+        node.telemetry.cpu_utilization_percent,
+        node.telemetry.active_tasks,
+        node.observed_throughput_units_per_second,
+        node.performance_factor
+    );
+    if !stats.current_partitions.is_empty() {
+        println!("  partitions={}", stats.current_partitions.join(", "));
+    }
+    Ok(())
+}
+
 fn ping(device: String) -> Result<(), CommandError> {
     let api = client();
     let (nodes, latency) = api.nodes_with_latency()?;
@@ -278,11 +558,15 @@ fn gpu_description(gpu: &crate::api::GpuInfo) -> String {
 fn run(args: Vec<String>) -> Result<(), CommandError> {
     if args.is_empty() {
         return Err(CommandError::Usage(
-            "Usage: nodren run <sum|xor|dot_product> [arguments...]".to_string(),
+            "Usage: nodren run <sum|xor|dot_product|process|command|script> [arguments...]"
+                .to_string(),
         ));
     }
 
     let command = args[0].to_ascii_lowercase();
+    if matches!(command.as_str(), "process" | "command" | "script") {
+        return run_general_task(&command, &args[1..]);
+    }
     let payload = workload_payload(&command, &args[1..])?;
     let request = JobRequest {
         command: command.clone(),
@@ -290,9 +574,16 @@ fn run(args: Vec<String>) -> Result<(), CommandError> {
         requirements: ResourceRequirements {
             cpu_cores: 1,
             ram_gb: 1,
+            max_ram_gb: 0,
             gpu_required: false,
+            gpu_count: 0,
+            vram_gb: 0,
+            accelerator_type: String::new(),
+            gpu_capabilities: Vec::new(),
         },
         payload_base64: Some(BASE64.encode(payload)),
+        distribution_mode: None,
+        manual_allocations: None,
     };
     let api = client();
     let submitted = api.submit_job(&request)?;
@@ -318,6 +609,73 @@ fn run(args: Vec<String>) -> Result<(), CommandError> {
     println!("Worker       {}", completed.node_id);
     println!("Result       {}", result.value);
     println!("Duration     {} us", result.duration_us);
+    Ok(())
+}
+
+fn run_general_task(command: &str, args: &[String]) -> Result<(), CommandError> {
+    let separator = args
+        .iter()
+        .position(|value| value == "--")
+        .unwrap_or(args.len());
+    let program = &args[..separator];
+    let task_arguments = if separator < args.len() {
+        args[separator + 1..].to_vec()
+    } else {
+        Vec::new()
+    };
+    let mut spec = GeneralTaskSpec {
+        task_type: command.to_ascii_uppercase(),
+        version: "1".to_string(),
+        arguments: task_arguments,
+        requirements: ResourceRequirements {
+            cpu_cores: 1,
+            ram_gb: 1,
+            max_ram_gb: 0,
+            gpu_required: false,
+            gpu_count: 0,
+            vram_gb: 0,
+            accelerator_type: String::new(),
+            gpu_capabilities: Vec::new(),
+        },
+        retry: RetryPolicy { max_retries: 0 },
+        ..GeneralTaskSpec::default()
+    };
+    match command {
+        "script" if program.len() >= 2 => {
+            spec.runtime = program[0].clone();
+            spec.script = program[1].clone();
+        }
+        "script" => {
+            return Err(CommandError::Usage(
+                "Usage: nodren run script <runtime> <script> [-- arguments...]".to_string(),
+            ));
+        }
+        "process" | "command" if program.len() == 1 => spec.executable = program[0].clone(),
+        "process" | "command" => {
+            return Err(CommandError::Usage(format!(
+                "Usage: nodren run {command} <executable> [-- arguments...]"
+            )));
+        }
+        _ => unreachable!(),
+    }
+    let submitted = client().submit_task(&TaskRequest {
+        id: None,
+        batch_id: None,
+        task: spec,
+    })?;
+    println!("Task ID       {}", submitted.id);
+    println!("Type          {}", command.to_ascii_uppercase());
+    println!("State         {}", submitted.status);
+    println!("Waiting for result...");
+    let timeout = std::env::var("NODREN_JOB_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30);
+    let completed = client().wait_for_job(&submitted.id, Duration::from_secs(timeout))?;
+    let result = completed.execution_result.as_ref().ok_or_else(|| {
+        ApiError::InvalidResponse("completed task has no execution result".to_string())
+    })?;
+    print_task_result(result);
     Ok(())
 }
 
@@ -354,17 +712,45 @@ fn jobs() -> Result<(), CommandError> {
     Ok(())
 }
 
-fn logs(args: Vec<String>) -> Result<(), CommandError> {
-    header("Nodren Logs");
-    if args.is_empty() {
-        println!("[INFO] Centralized log retrieval is not implemented yet.");
+fn print_job(job: &crate::api::Job) {
+    let workers = if job.node_ids.is_empty() {
+        if job.node_id.is_empty() {
+            "-".to_string()
+        } else {
+            job.node_id.clone()
+        }
     } else {
-        println!(
-            "[INFO] Log retrieval is not implemented for target(s): {}",
-            args.join(", ")
-        );
+        job.node_ids.join(", ")
+    };
+    println!("Job ID       {}", job.id);
+    println!("Workload     {}", job.command);
+    println!("Status       {}", job.status);
+    println!("Progress     {:.2}%", job.distribution.progress_percent);
+    println!("Workers      {}", workers);
+    println!(
+        "Partitions   {} total, {} completed, {} running, {} pending",
+        job.distribution.total_partitions,
+        job.distribution.completed_partitions,
+        job.distribution.running_partitions,
+        job.distribution.pending_partitions
+    );
+    println!("Created      {}", job.created_at);
+    println!("Updated      {}", job.updated_at);
+    if let Some(result) = &job.result {
+        println!("Result       {}", result.value);
+        println!("Error        {} {}", result.error_code, result.error);
     }
-    Ok(())
+}
+
+fn logs(args: Vec<String>) -> Result<(), CommandError> {
+    let target = if args.is_empty() {
+        "the Controller API".to_string()
+    } else {
+        args.join(", ")
+    };
+    Err(CommandError::Usage(format!(
+        "centralized log retrieval is not available for {target}"
+    )))
 }
 
 fn workload_payload(command: &str, args: &[String]) -> Result<Vec<u8>, CommandError> {
@@ -458,22 +844,46 @@ CONTROLLER
     config                  Show Controller configuration
 
 WORKERS
-    devices                 List registered workers
-    info <worker>           Show worker details
-    ping <worker>           Show Controller-observed worker reachability
+    workers list             List registered workers
+    workers stats            Show telemetry and scheduler capacity
+    workers info <worker>   Show worker details
+    workers ping <worker>   Check worker reachability
+    workers pause <worker>  Stop new scheduling to a worker
+    workers resume <worker> Resume scheduling to a worker
+    workers remove <worker> Disconnect a worker
 
 WORKLOADS
     run sum <byte>...       Submit and wait for a sum result
     run xor <byte>...       Submit and wait for an xor result
     run dot_product <left> <right>
                             Vectors are comma-separated integers
-    jobs                    List live jobs
+    run process <executable> [-- arguments...]
+    run command <executable> [-- arguments...]
+    run script <runtime> <script> [-- arguments...]
+    jobs list               List live jobs
+    jobs info <job>         Show job details and progress
+    jobs stats <job>         Show timing and scheduler decisions
+    jobs partitions <job>    Show partition states and assignment reasons
+    jobs run <workload> ... Submit and wait for a result
+    jobs cancel <job>       Cancel a job
+    jobs pause <job>        Pause a queued job
+    jobs resume <job>       Resume a paused job
+    tasks list               List generalized tasks
+    tasks info <task>        Show task details and execution result
+    tasks logs <task>        Show captured stdout/stderr
+    tasks result <task>      Show exit code and execution result
+    tasks cancel <task>      Cancel a queued or running task
+    tasks retry <task>       Retry a failed or timed-out task
+    distribution show [job] Show distribution state
+    distribution auto <job> Use automatic distribution
+    distribution set <job> worker=percent...
+    monitor                  Stream controller events (alias: events)
 
 LIMITED
-    start                   Check Controller; does not start processes
-    stop                    Reports lifecycle limitation
-    restart                 Reports lifecycle limitation
-    logs [target]           Reports log retrieval limitation
+    start                   Not available; use the Controller entrypoint
+    stop                    Not available through the HTTP API
+    restart                 Not available through the HTTP API
+    logs [target]           Not available through the HTTP API
 
 Environment:
     NODREN_CONTROLLER_URL   Controller URL, default http://127.0.0.1:8080

@@ -20,6 +20,15 @@ pub enum MessageType {
     Error = 8,
     Goodbye = 9,
     Ready = 10,
+    TaskSubmit = 11,
+    TaskAck = 12,
+    TaskCancel = 13,
+    TaskState = 14,
+    TaskResult = 15,
+    ArtifactBegin = 16,
+    ArtifactChunk = 17,
+    ArtifactEnd = 18,
+    Capabilities = 19,
 }
 
 impl TryFrom<u16> for MessageType {
@@ -37,6 +46,15 @@ impl TryFrom<u16> for MessageType {
             8 => Ok(Self::Error),
             9 => Ok(Self::Goodbye),
             10 => Ok(Self::Ready),
+            11 => Ok(Self::TaskSubmit),
+            12 => Ok(Self::TaskAck),
+            13 => Ok(Self::TaskCancel),
+            14 => Ok(Self::TaskState),
+            15 => Ok(Self::TaskResult),
+            16 => Ok(Self::ArtifactBegin),
+            17 => Ok(Self::ArtifactChunk),
+            18 => Ok(Self::ArtifactEnd),
+            19 => Ok(Self::Capabilities),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unknown message type",
@@ -87,6 +105,57 @@ pub fn put_string(out: &mut Vec<u8>, value: &str) -> io::Result<()> {
     put_u32(out, value.len() as u32);
     out.extend_from_slice(value.as_bytes());
     Ok(())
+}
+
+fn put_string_array(out: &mut Vec<u8>, values: &[String]) -> io::Result<()> {
+    if values.len() > MAX_BATCH as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "array too large",
+        ));
+    }
+    put_u32(out, values.len() as u32);
+    for value in values {
+        put_string(out, value)?;
+    }
+    Ok(())
+}
+
+fn get_string_array(data: &[u8], cursor: &mut usize) -> io::Result<Vec<String>> {
+    let count = get_u32(data, cursor)?;
+    if count > MAX_BATCH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "array too large",
+        ));
+    }
+    let mut values = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        values.push(get_string(data, cursor)?);
+    }
+    Ok(values)
+}
+
+fn put_bytes(out: &mut Vec<u8>, value: &[u8]) -> io::Result<()> {
+    if value.len() > MAX_FRAME {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bytes too large",
+        ));
+    }
+    put_u32(out, value.len() as u32);
+    out.extend_from_slice(value);
+    Ok(())
+}
+
+fn get_bytes(data: &[u8], cursor: &mut usize) -> io::Result<Vec<u8>> {
+    let length = get_u32(data, cursor)? as usize;
+    if length > MAX_FRAME || *cursor + length > data.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid bytes"));
+    }
+    let value = data[*cursor..*cursor + length].to_vec();
+    *cursor += length;
+    Ok(value)
 }
 
 pub fn get_string(data: &[u8], cursor: &mut usize) -> io::Result<String> {
@@ -168,7 +237,12 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Frame> {
 pub struct ResourceRequirements {
     pub cpu_cores: u32,
     pub ram_gb: u64,
+    pub max_ram_gb: u64,
     pub gpu_required: bool,
+    pub gpu_count: u32,
+    pub vram_gb: u64,
+    pub accelerator_type: String,
+    pub gpu_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +250,10 @@ pub struct GPUInfo {
     pub vendor: String,
     pub model: String,
     pub vram_gb: u64,
+    pub count: u32,
+    pub capabilities: Vec<String>,
+    pub driver: String,
+    pub runtime: String,
 }
 
 #[derive(Debug, Clone)]
@@ -184,9 +262,13 @@ pub struct NodeInfo {
     pub hostname: String,
     pub os: String,
     pub arch: String,
+    pub cpu_model: String,
     pub cpu_cores: u32,
     pub ram_gb: u64,
     pub gpu: GPUInfo,
+    pub runtimes: Vec<String>,
+    pub execution_types: Vec<String>,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +294,160 @@ pub struct TaskResult {
     pub node_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct GeneralTaskSpec {
+    pub task_type: String,
+    pub version: String,
+    pub executable: String,
+    pub runtime: String,
+    pub script: String,
+    pub workload: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, String)>,
+    pub working_directory: String,
+    pub stdin: Vec<u8>,
+    pub timeout_ms: u64,
+    pub stdout_limit_bytes: u64,
+    pub stderr_limit_bytes: u64,
+    pub cpu_cores: u32,
+    pub ram_gb: u64,
+    pub max_ram_gb: u64,
+    pub gpu_required: bool,
+    pub gpu_count: u32,
+    pub vram_gb: u64,
+    pub accelerator_type: String,
+    pub gpu_capabilities: Vec<String>,
+    pub target_os: String,
+    pub target_arch: String,
+    pub required_runtimes: Vec<String>,
+    pub required_capabilities: Vec<String>,
+    pub allowed_workers: Vec<String>,
+    pub preferred_worker: String,
+    pub input_artifacts: Vec<ArtifactSpec>,
+    pub output_artifacts: Vec<ArtifactSpec>,
+    pub workload_kind: String,
+    pub strategy: String,
+    pub required_workers: u32,
+    pub replicas: u32,
+    pub package_manifest: Option<TaskPackageManifest>,
+    pub max_retries: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskPackageManifest {
+    pub entry_point: String,
+    pub runtime: String,
+    pub arguments: Vec<String>,
+    pub environment: Vec<(String, String)>,
+    pub os: String,
+    pub arch: String,
+    pub required_runtimes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArtifactSpec {
+    pub id: String,
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneralTaskEnvelope {
+    pub task_id: u64,
+    pub job_id: String,
+    pub attempt: u32,
+    pub spec: GeneralTaskSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneralTaskResult {
+    pub task_id: u64,
+    pub job_id: String,
+    pub attempt: u32,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub duration_us: u64,
+    pub error_code: String,
+    pub error: String,
+}
+
+pub struct ArtifactBegin {
+    pub task_id: u64,
+    pub artifact: ArtifactSpec,
+}
+
+pub struct ArtifactChunk {
+    pub task_id: u64,
+    pub artifact_id: String,
+    pub offset: u64,
+    pub data: Vec<u8>,
+}
+
+pub fn decode_artifact_begin(data: &[u8]) -> io::Result<ArtifactBegin> {
+    let mut cursor = 0;
+    let task_id = get_u64(data, &mut cursor)?;
+    let id = get_string(data, &mut cursor)?;
+    let name = get_string(data, &mut cursor)?;
+    let sha256 = get_string(data, &mut cursor)?;
+    let kind = get_string(data, &mut cursor)?;
+    let size = get_u64(data, &mut cursor)?;
+    if cursor != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "artifact begin trailing data",
+        ));
+    }
+    Ok(ArtifactBegin {
+        task_id,
+        artifact: ArtifactSpec {
+            id,
+            name,
+            size,
+            sha256,
+            kind,
+        },
+    })
+}
+
+pub fn decode_artifact_chunk(data: &[u8]) -> io::Result<ArtifactChunk> {
+    let mut cursor = 0;
+    let task_id = get_u64(data, &mut cursor)?;
+    let artifact_id = get_string(data, &mut cursor)?;
+    let offset = get_u64(data, &mut cursor)?;
+    let bytes = get_bytes(data, &mut cursor)?;
+    if cursor != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "artifact chunk trailing data",
+        ));
+    }
+    Ok(ArtifactChunk {
+        task_id,
+        artifact_id,
+        offset,
+        data: bytes,
+    })
+}
+
+pub fn decode_artifact_end(data: &[u8]) -> io::Result<(u64, String)> {
+    let mut cursor = 0;
+    let task_id = get_u64(data, &mut cursor)?;
+    let artifact_id = get_string(data, &mut cursor)?;
+    if cursor != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "artifact end trailing data",
+        ));
+    }
+    Ok((task_id, artifact_id))
+}
+
 pub fn encode_register(node: &NodeInfo) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     for s in [
@@ -221,12 +457,18 @@ pub fn encode_register(node: &NodeInfo) -> io::Result<Vec<u8>> {
         &node.arch,
         &node.gpu.vendor,
         &node.gpu.model,
+        &node.cpu_model,
     ] {
         put_string(&mut out, s)?;
     }
+    put_string_array(&mut out, &node.runtimes)?;
+    put_string_array(&mut out, &node.execution_types)?;
+    put_string_array(&mut out, &node.capabilities)?;
     put_u64(&mut out, node.cpu_cores as u64);
     put_u64(&mut out, node.ram_gb);
     put_u64(&mut out, node.gpu.vram_gb);
+    put_u64(&mut out, node.gpu.count as u64);
+    put_string_array(&mut out, &node.gpu.capabilities)?;
     Ok(out)
 }
 
@@ -284,7 +526,12 @@ pub fn decode_task_batch(data: &[u8]) -> io::Result<Vec<Task>> {
             requirements: ResourceRequirements {
                 cpu_cores,
                 ram_gb,
+                max_ram_gb: 0,
                 gpu_required,
+                gpu_count: 0,
+                vram_gb: 0,
+                accelerator_type: String::new(),
+                gpu_capabilities: Vec::new(),
             },
             payload: data[cursor..cursor + payload_len].to_vec(),
         });
@@ -319,12 +566,223 @@ pub fn encode_task_results(results: &[TaskResult]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
+pub fn decode_general_task(data: &[u8]) -> io::Result<GeneralTaskEnvelope> {
+    let mut cursor = 0usize;
+    let task_id = get_u64(data, &mut cursor)?;
+    let job_id = get_string(data, &mut cursor)?;
+    let attempt = get_u32(data, &mut cursor)?;
+    let task_type = get_string(data, &mut cursor)?;
+    let version = get_string(data, &mut cursor)?;
+    let executable = get_string(data, &mut cursor)?;
+    let runtime = get_string(data, &mut cursor)?;
+    let script = get_string(data, &mut cursor)?;
+    let workload = get_string(data, &mut cursor)?;
+    let working_directory = get_string(data, &mut cursor)?;
+    let arguments = get_string_array(data, &mut cursor)?;
+    let environment_values = get_string_array(data, &mut cursor)?;
+    if environment_values.len() % 2 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid environment",
+        ));
+    }
+    let environment = environment_values
+        .chunks_exact(2)
+        .map(|entry| (entry[0].clone(), entry[1].clone()))
+        .collect();
+    let stdin = get_bytes(data, &mut cursor)?;
+    let timeout_ms = get_u64(data, &mut cursor)?;
+    let stdout_limit_bytes = get_u64(data, &mut cursor)?;
+    let stderr_limit_bytes = get_u64(data, &mut cursor)?;
+    let ram_gb = get_u64(data, &mut cursor)?;
+    let max_ram_gb = get_u64(data, &mut cursor)?;
+    let cpu_cores = get_u32(data, &mut cursor)?;
+    if cursor >= data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "gpu requirement",
+        ));
+    }
+    let gpu_required = data[cursor] != 0;
+    cursor += 1;
+    let gpu_count = get_u32(data, &mut cursor)?;
+    let vram_gb = get_u64(data, &mut cursor)?;
+    let accelerator_type = get_string(data, &mut cursor)?;
+    let gpu_capabilities = get_string_array(data, &mut cursor)?;
+    let target_os = get_string(data, &mut cursor)?;
+    let target_arch = get_string(data, &mut cursor)?;
+    let preferred_worker = get_string(data, &mut cursor)?;
+    let required_runtimes = get_string_array(data, &mut cursor)?;
+    let required_capabilities = get_string_array(data, &mut cursor)?;
+    let allowed_workers = get_string_array(data, &mut cursor)?;
+    let input_artifacts = get_artifact_array(data, &mut cursor)?;
+    let output_artifacts = get_artifact_array(data, &mut cursor)?;
+    let workload_kind = get_string(data, &mut cursor)?;
+    let strategy = get_string(data, &mut cursor)?;
+    let required_workers = get_u32(data, &mut cursor)?;
+    let replicas = get_u32(data, &mut cursor)?;
+    if cursor >= data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "package manifest flag",
+        ));
+    }
+    let package_manifest = if data[cursor] != 0 {
+        cursor += 1;
+        let entry_point = get_string(data, &mut cursor)?;
+        let runtime = get_string(data, &mut cursor)?;
+        let os = get_string(data, &mut cursor)?;
+        let arch = get_string(data, &mut cursor)?;
+        let arguments = get_string_array(data, &mut cursor)?;
+        let required_runtimes = get_string_array(data, &mut cursor)?;
+        let environment_values = get_string_array(data, &mut cursor)?;
+        if environment_values.len() % 2 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid package manifest environment",
+            ));
+        }
+        let environment = environment_values
+            .chunks_exact(2)
+            .map(|entry| (entry[0].clone(), entry[1].clone()))
+            .collect();
+        Some(TaskPackageManifest {
+            entry_point,
+            runtime,
+            arguments,
+            environment,
+            os,
+            arch,
+            required_runtimes,
+        })
+    } else {
+        cursor += 1;
+        None
+    };
+    let max_retries = get_u32(data, &mut cursor)?;
+    if cursor != data.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "general task trailing data",
+        ));
+    }
+    if task_type.is_empty() || version.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "task type and version are required",
+        ));
+    }
+    Ok(GeneralTaskEnvelope {
+        task_id,
+        job_id,
+        attempt,
+        spec: GeneralTaskSpec {
+            task_type,
+            version,
+            executable,
+            runtime,
+            script,
+            workload,
+            arguments,
+            environment,
+            working_directory,
+            stdin,
+            timeout_ms,
+            stdout_limit_bytes,
+            stderr_limit_bytes,
+            cpu_cores,
+            ram_gb,
+            max_ram_gb,
+            gpu_required,
+            gpu_count,
+            vram_gb,
+            accelerator_type,
+            gpu_capabilities,
+            target_os,
+            target_arch,
+            required_runtimes,
+            required_capabilities,
+            allowed_workers,
+            preferred_worker,
+            input_artifacts,
+            output_artifacts,
+            workload_kind,
+            strategy,
+            required_workers,
+            replicas,
+            package_manifest,
+            max_retries,
+        },
+    })
+}
+
+fn get_artifact_array(data: &[u8], cursor: &mut usize) -> io::Result<Vec<ArtifactSpec>> {
+    let count = get_u32(data, cursor)?;
+    if count > MAX_BATCH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "too many artifacts",
+        ));
+    }
+    let mut artifacts = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        artifacts.push(ArtifactSpec {
+            id: get_string(data, cursor)?,
+            name: get_string(data, cursor)?,
+            sha256: get_string(data, cursor)?,
+            kind: get_string(data, cursor)?,
+            size: get_u64(data, cursor)?,
+        });
+    }
+    Ok(artifacts)
+}
+
+pub fn encode_general_task_result(result: &GeneralTaskResult) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    put_u64(&mut out, result.task_id);
+    put_string(&mut out, &result.job_id)?;
+    put_u32(&mut out, result.attempt);
+    put_string(&mut out, &result.status)?;
+    put_string(&mut out, &result.error_code)?;
+    put_string(&mut out, &result.error)?;
+    out.push(u8::from(result.exit_code.is_some()));
+    if let Some(exit_code) = result.exit_code {
+        out.extend_from_slice(&exit_code.to_le_bytes());
+    }
+    put_bytes(&mut out, &result.stdout)?;
+    put_bytes(&mut out, &result.stderr)?;
+    out.push(u8::from(result.stdout_truncated));
+    out.push(u8::from(result.stderr_truncated));
+    put_u64(&mut out, result.duration_us);
+    Ok(out)
+}
+
 pub fn encode_register_ack(message: &str) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     put_string(&mut out, message)?;
     Ok(out)
 }
 
-pub fn encode_heartbeat(unix_ms: i64) -> Vec<u8> {
-    unix_ms.to_le_bytes().to_vec()
+pub fn encode_heartbeat(
+    unix_ms: i64,
+    uptime_seconds: u64,
+    active_tasks: u32,
+    cpu_percent: Option<f64>,
+    memory_available_gb: Option<u64>,
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(&unix_ms.to_le_bytes());
+    out.extend_from_slice(&uptime_seconds.to_le_bytes());
+    out.extend_from_slice(&active_tasks.to_le_bytes());
+    let cpu_milli = cpu_percent
+        .map(|value| (value.clamp(0.0, 100.0) * 1000.0).round() as u32)
+        .unwrap_or(u32::MAX);
+    out.extend_from_slice(&cpu_milli.to_le_bytes());
+    out.extend_from_slice(
+        &memory_available_gb
+            .map(|value| value * 1024)
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    out
 }

@@ -32,6 +32,34 @@ func TestChooseNodeUsesBestFitAndDeterministicTieBreak(t *testing.T) {
 	}
 }
 
+func TestMeasuredTelemetryAndPerformanceAffectScheduling(t *testing.T) {
+	controller := NewController("", "")
+	fast := readyNode("fast", 4, 16)
+	slow := readyNode("slow", 4, 16)
+	fast.Telemetry.CPUUtilizationPercent = 10
+	slow.Telemetry.CPUUtilizationPercent = 90
+	fast.PerformanceFactor = 1.4
+	slow.PerformanceFactor = 0.6
+	controller.nodes[fast.Info.ID] = fast
+	controller.nodes[slow.Info.ID] = slow
+	controller.sessions[fast.Info.ID] = newSession(nil)
+	controller.sessions[slow.Info.ID] = newSession(nil)
+	updateNodeCapacity(fast)
+	updateNodeCapacity(slow)
+
+	if fast.EffectiveCapacity <= slow.EffectiveCapacity {
+		t.Fatalf("expected measured load and performance to favor fast worker: fast=%.2f slow=%.2f", fast.EffectiveCapacity, slow.EffectiveCapacity)
+	}
+
+	job := &Job{ID: "job", Distribution: DistributionInfo{Mode: DistributionAutomatic, TotalPartitions: 2}, Partitions: []Partition{
+		{ID: "p1", Units: 10, State: PartitionQueued},
+		{ID: "p2", Units: 10, State: PartitionQueued},
+	}}
+	if got := controller.choosePartitionNodeLocked(job); got != "fast" {
+		t.Fatalf("expected fast worker to be selected, got %q", got)
+	}
+}
+
 func TestChooseNodeExcludesUnavailableAndIncompatibleWorkers(t *testing.T) {
 	controller := NewController("", "")
 	controller.nodes["busy"] = readyNode("busy", 8, 16)
@@ -48,6 +76,40 @@ func TestChooseNodeExcludesUnavailableAndIncompatibleWorkers(t *testing.T) {
 	controller.nodes["busy"].AllocatedRAMGB = 16
 	if got := controller.chooseNode(ResourceRequirements{CPUCores: 1, RAMGB: 1}); got != "" {
 		t.Fatalf("busy worker selected %q", got)
+	}
+}
+
+func TestGPURequirementsUseCountMemoryAndCapabilities(t *testing.T) {
+	controller := NewController("", "")
+	worker := readyNode("gpu-worker", 16, 64)
+	worker.Info.GPU = GPUInfo{
+		Vendor:       "NVIDIA",
+		Model:        "A10",
+		VRAMGB:       24,
+		Count:        2,
+		Capabilities: []string{"cuda", "tensor"},
+		Runtime:      "CUDA",
+	}
+	controller.nodes[worker.Info.ID] = worker
+	controller.sessions[worker.Info.ID] = newSession(nil)
+
+	requirements := ResourceRequirements{
+		CPUCores:        4,
+		RAMGB:           8,
+		GPURequired:     true,
+		GPUCount:        2,
+		VRAMGB:          16,
+		AcceleratorType: "CUDA",
+		GPUCapabilities: []string{"tensor"},
+	}
+	if got := controller.chooseNode(requirements); got != worker.Info.ID {
+		t.Fatalf("compatible GPU worker was not selected: %q", got)
+	}
+	if got := controller.chooseNode(ResourceRequirements{GPUCount: 3}); got != "" {
+		t.Fatalf("worker with insufficient GPU count was selected: %q", got)
+	}
+	if got := controller.chooseNode(ResourceRequirements{VRAMGB: 32}); got != "" {
+		t.Fatalf("worker with insufficient VRAM was selected: %q", got)
 	}
 }
 

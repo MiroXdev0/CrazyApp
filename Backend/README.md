@@ -1,18 +1,26 @@
 # Nodren Backend
 
 For the pre-release deployment, `nodren.exe` is the main Controller process
-and also exposes the operational CLI commands. `nodren-worker.exe` is the
-standalone worker process. `nodren-ui.exe` is the Avalonia desktop frontend;
-it uses the Controller HTTP API and does not own backend process management.
+and also exposes the operational CLI commands. `nodren.exe-CLI` is the
+separate Rust CLI. `nodren-worker.exe` is the standalone worker process. The
+Avalonia desktop frontend remains a separately built development component.
 Build the release with `scripts/build-release.ps1` on Windows or
-`scripts/build-release.sh` on Unix-like systems.
+`bash scripts/build-release.sh linux-x64` on Linux x86-64. Linux x64 support
+is Beta / Unstable; Windows x64 remains the primary supported platform.
 
 The Controller worker listener defaults to `:9000`; the HTTP API defaults to
 `:8080`. Set `NODREN_NODE_ADDR` and `NODREN_HTTP_ADDR` to bind specific
 interfaces. Workers connect with `--controller <host:port>` or
 `--controller=<host:port>`, and may use `NODREN_CONTROLLER_ADDR` as a fallback.
-The worker release directory must keep `nodren_core.dll` beside
+The worker release directory must keep `nodren-core.dll` beside
 `nodren-worker.exe` on Windows (or `libnodren_core.so` on Linux).
+
+The Linux release is written to `release/LinuxX64/` and contains
+`nodren`, `nodren-worker`, `nodren-ui`, and `libnodren_core.so`. On a Linux
+x86-64 host, run `bash scripts/test-linux-release.sh` after building to verify
+Controller startup, worker registration, adjacent native-core loading, the UI
+API self-test, and a `sum` job. The normal Avalonia window is checked only
+when `DISPLAY` or `WAYLAND_DISPLAY` is available.
 
 This backend replaces the previous collection of Go, Python, and stub Rust servers with a single coherent architecture:
 
@@ -53,6 +61,8 @@ Responsibilities:
 - binary framing
 - task/result tracking
 - retry/requeue after node loss
+- worker telemetry and scheduler performance history
+- explainable placement and partition timing
 
 Run:
 
@@ -72,6 +82,7 @@ Environment variables:
 ```text
 NODREN_NODE_ADDR
 NODREN_HTTP_ADDR
+NODREN_STATE_FILE
 ```
 
 ### Rust worker
@@ -111,7 +122,13 @@ Useful options:
 --gpu-vendor=<vendor>
 --gpu-model=<model>
 --gpu-vram-gb=<value>
+--gpu-count=<value>
 ```
+
+When `nvidia-smi` is available, the worker also discovers NVIDIA GPU count,
+model, memory, driver, CUDA capability, and compute capability. Explicit GPU
+flags override the corresponding discovered values; a CPU-only worker remains
+valid when discovery is unavailable.
 
 ## Test job
 
@@ -179,14 +196,22 @@ ranges, while `dot_product` partitions corresponding vector ranges. Inputs of
 64 units or fewer stay as one task; larger inputs are split into a bounded
 pool of chunks and assigned dynamically as workers release capacity.
 
-The scheduling capacity estimate is deterministic and intentionally not a
-benchmark: `capacity_score = CPU cores + RAM GiB / 4`. Effective capacity
-multiplies that score by the smaller of the available CPU and RAM fractions.
-GPU metadata is still enforced for requirements but does not inflate the
-score because GPU execution is not implemented. Automatic assignment chooses
-the worker with the lowest assigned-units/effective-capacity ratio, subject
-to current CPU/RAM availability. This gives stronger workers more work while
-allowing a worker that finishes early to receive another partition.
+The scheduling capacity estimate starts with `capacity_score = CPU cores + RAM
+GiB / 4`, then incorporates controller-side allocations, the latest worker
+CPU/memory telemetry, and a smoothed performance factor learned from completed
+partitions. GPU metadata is still enforced for requirements but does not
+inflate the score because GPU execution is not implemented. Automatic
+assignment chooses the worker with the lowest assigned-units/effective-
+capacity ratio, subject to current CPU/RAM availability. Each partition stores
+the effective capacity, observed load, and distribution mode that explain its
+assignment. Unavailable host measurements are represented explicitly and fall
+back to advertised capacity.
+
+Partition sizing is adaptive: the workload registry still owns partitioning
+and reduction, while the controller uses the sum of currently eligible worker
+capacity to choose a bounded target chunk size. As workers complete work,
+observed throughput adjusts future placement and lets idle workers receive
+additional partitions.
 
 The job API exposes `distribution`, `partitions`, `node_ids`, and each
 partition's state, attempt, unit count, worker, and partial result. If a
@@ -220,6 +245,13 @@ existing C ABI. The backend does not duplicate native computation in Go.
 
 ## End-to-end test
 
+The scheduler microbenchmark can be run with:
+
+```bash
+cd Backend/Controller-Go
+go test -bench BenchmarkChoosePartitionNode -benchmem ./...
+```
+
 Run the external integration test from the repository root:
 
 ```bash
@@ -240,3 +272,121 @@ that worker. If a connection fails during execution, the controller cannot
 know whether the worker completed the task before the failure; that task may
 therefore execute again after requeue. Nodren does not claim exactly-once
 execution.
+
+## Control API and CLI
+
+The Go binary is both the Controller entrypoint and the operational CLI. With
+the Controller running, the supported control commands are:
+
+```text
+nodren status
+nodren controller info
+nodren workers list|info <id>|ping <id>|pause <id>|resume <id>|remove <id>
+nodren workers stats [<id>]
+nodren jobs list|info <id>|stats <id>|partitions <id>|run <workload> ...|cancel <id>|pause <id>|resume <id>
+nodren distribution show [job-id]
+nodren distribution auto <job-id>
+nodren distribution set <job-id> worker=percent [worker=percent ...]
+nodren config show
+nodren doctor
+nodren monitor                 # live SSE event stream (alias: events)
+```
+
+Worker pause prevents new scheduling while preserving the worker session;
+remove disconnects the session and requeues unfinished work. Job cancellation
+is authoritative in the Controller, so late results from a cancelled task are
+ignored. Job pause/resume currently applies to queued jobs; running-job
+suspension is rejected because protocol version 1 has no task-suspend message.
+
+The same operations are available over HTTP under `/v1/nodes/{id}` and
+`/v1/jobs/{id}`. Distribution updates use
+`PUT /v1/jobs/{id}/distribution`, are restricted to queued jobs, and require
+manual allocations to total exactly 100 percent.
+
+## Recovery and state synchronization
+
+The Controller enforces explicit job states (`QUEUED`, `RUNNING`, `PAUSED`,
+`COMPLETED`, `FAILED`, and `CANCELLED`) and partition states. Terminal jobs and
+completed partitions cannot be moved back into execution; task results are
+accepted only while the task ID is still mapped to the active partition, so
+duplicate and late results are ignored.
+
+When `NODREN_STATE_FILE` is set (the release entrypoint defaults it to
+`nodren-state.json`), the Controller atomically snapshots jobs, partitions,
+payloads, results, worker metadata, timestamps, and progress. On restart,
+persisted workers are marked `OFFLINE`, unfinished assignments are requeued,
+and jobs wait for a fresh worker connection before scheduling resumes.
+
+Clients can subscribe to `GET /v1/events` as an SSE stream. Events cover worker
+connection/telemetry/state changes, job creation/progress/lifecycle changes,
+and partition assignment/completion/requeue. Telemetry events are coalesced so
+heartbeat frequency does not turn the SSE stream into a high-rate metrics
+transport. `GET /v1/nodes/{id}/stats`, `GET /v1/jobs/{id}/stats`, and
+`GET /v1/jobs/{id}/partitions` expose the same data for scripts and dashboards.
+The Avalonia client uses this stream, reconnects with a small backoff when the
+Controller is unavailable, and displays current worker load and scheduler
+capacity.
+
+## General tasks
+
+The Controller also exposes a typed task API under `/v1/tasks`. Supported task
+types are `PROCESS`, `SCRIPT`, `COMMAND`, and `NATIVE_WORKLOAD`; native tasks
+continue to use the existing partitioning and C ABI path. Process tasks are
+dispatched through the persistent binary protocol to the Rust worker, which
+executes the OS process with structured arguments, environment variables,
+stdin, timeout, cancellation, bounded stdout/stderr capture, exit-code
+reporting, and retry attempts.
+
+Examples:
+
+```text
+nodren run process /usr/bin/printf -- hello
+nodren run script python script.py -- arg1 arg2
+nodren run command cmd.exe -- /C echo hello
+nodren tasks list
+nodren tasks result TASK-000001
+nodren tasks cancel TASK-000001
+```
+
+Multiple task requests can be submitted with `POST /v1/tasks/batch`; each task
+is scheduled independently and retains the shared `batch_id`. Task targets
+can require an OS, architecture, runtime, capability, preferred worker, or
+allowed worker list. Workers advertise runtimes, execution types, and coarse
+capabilities during registration.
+
+Artifacts use `POST /v1/artifacts` for streamed binary upload and
+`GET /v1/artifacts/{id}` for download. Uploaded bytes are checksum-verified
+and stored separately from the main state JSON. `GET /v1/artifacts?sha256=...`
+provides a content-addressed lookup, and the CLI uses it before uploading a
+repeat file or package. Input artifact references are sent to workers in
+bounded `ARTIFACT_BEGIN`/`CHUNK`/`END` frames and staged in the worker task
+directory without loading the complete artifact into memory. Folder packages
+carry `nodren.manifest.json`; Unix executable modes are restored on extraction.
+The current trust model is a trusted cluster: the worker is not a sandbox and
+executes approved task types with its OS account's permissions. Artifact
+distribution is separate from computation distribution: arbitrary programs
+run whole on one worker, while multi-worker strategies remain adapter-backed
+and are rejected until a workload adapter is supplied.
+
+## AI execution plans
+
+The first AI adapter is `distributed-process`. It creates a capability-aware
+worker group and can launch one real process or script task per rank through
+the existing generalized task path. Each rank receives
+`NODREN_AI_EXECUTION_ID`, `NODREN_AI_GROUP_ID`, `NODREN_AI_RANK`,
+`NODREN_AI_WORLD_SIZE`, and leader metadata. Model and dataset artifacts reuse
+the existing artifact system.
+
+```text
+nodren ai inspect ./model
+nodren ai plan ./model --workers 2 --strategy distributed-process
+nodren ai run ./model --workers 2 --strategy distributed-process
+nodren ai status AI-000001
+nodren ai cancel AI-000001
+```
+
+This adapter does not yet implement model/computation sharding, peer-network
+transport, tensor or pipeline parallelism, checkpoint upload, or output
+artifact collection. Model shard metadata distinguishes file shards from
+computation shards; computation shards and enabled checkpointing return
+explicit capability errors until an adapter implements their runtime semantics.

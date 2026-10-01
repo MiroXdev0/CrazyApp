@@ -98,7 +98,7 @@ fn main() {
     objects.push(asm_object);
 
     let library = if windows {
-        out.join("nodren_core.dll")
+        out.join("nodren-core.dll")
     } else if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         out.join("libnodren_core.dylib")
     } else {
@@ -106,7 +106,11 @@ fn main() {
     };
     let mut link_args = vec!["-shared".into()];
     if windows {
-        link_args.extend(["-static-libgcc".into(), "-static-libstdc++".into()]);
+        link_args.extend([
+            "-static-libgcc".into(),
+            "-static-libstdc++".into(),
+            "-static-libwinpthread".into(),
+        ]);
     }
     link_args.extend(
         objects

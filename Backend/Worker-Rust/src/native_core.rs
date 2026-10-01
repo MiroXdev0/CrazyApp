@@ -145,18 +145,20 @@ fn resolve_core_library() -> io::Result<PathBuf> {
         }
     }
 
-    let library_name = if cfg!(windows) {
-        "nodren_core.dll"
+    let library_names: &[&str] = if cfg!(windows) {
+        &["nodren-core.dll", "nodren_core.dll"]
     } else if cfg!(target_os = "macos") {
-        "libnodren_core.dylib"
+        &["libnodren_core.dylib"]
     } else {
-        "libnodren_core.so"
+        &["libnodren_core.so"]
     };
     if let Ok(executable) = std::env::current_exe() {
         if let Some(directory) = executable.parent() {
-            let path = directory.join(library_name);
-            if path.exists() {
-                return Ok(path);
+            for library_name in library_names {
+                let path = directory.join(library_name);
+                if path.exists() {
+                    return Ok(path);
+                }
             }
         }
     }
@@ -171,7 +173,8 @@ fn resolve_core_library() -> io::Result<PathBuf> {
     Err(io::Error::new(
         io::ErrorKind::NotFound,
         format!(
-            "native core library not found; expected {library_name} beside the worker executable"
+            "native core library not found; expected one of {} beside the worker executable",
+            library_names.join(", ")
         ),
     ))
 }

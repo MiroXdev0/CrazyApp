@@ -58,3 +58,5 @@ nodren_asm_sum_i32:
 .zero:
     xor eax, eax
     ret
+
+.section .note.GNU-stack,"",@progbits

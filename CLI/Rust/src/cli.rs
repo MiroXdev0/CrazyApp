@@ -21,11 +21,56 @@ pub enum Command {
     // Workloads
     Run(Vec<String>),
     Jobs,
+    Workers(WorkerCommand),
+    JobControl(JobCommand),
+    Tasks(TaskCommand),
+    Distribution(DistributionCommand),
+    Events,
     Logs(Vec<String>),
 
     // General
     Version,
     Help,
+}
+
+#[derive(Debug)]
+pub enum WorkerCommand {
+    List,
+    Info(String),
+    Ping(String),
+    Pause(String),
+    Resume(String),
+    Remove(String),
+    Stats(Option<String>),
+}
+
+#[derive(Debug)]
+pub enum JobCommand {
+    List,
+    Info(String),
+    Run(Vec<String>),
+    Cancel(String),
+    Pause(String),
+    Resume(String),
+    Stats(String),
+    Partitions(String),
+}
+
+#[derive(Debug)]
+pub enum TaskCommand {
+    List,
+    Info(String),
+    Cancel(String),
+    Retry(String),
+    Logs(String),
+    Result(String),
+}
+
+#[derive(Debug)]
+pub enum DistributionCommand {
+    Show(Option<String>),
+    Auto(String),
+    Set(String, Vec<String>),
 }
 
 pub fn parse_command() -> Command {
@@ -70,6 +115,8 @@ where
         // -------------------------------------------------
         "devices" | "nodes" => Command::Devices,
 
+        "workers" => parse_workers(args.collect()),
+
         "ping" => match args.next() {
             Some(device) => Command::Ping(device),
 
@@ -87,9 +134,15 @@ where
         // -------------------------------------------------
         "run" => Command::Run(args.collect()),
 
-        "jobs" | "job" => Command::Jobs,
+        "jobs" | "job" => parse_jobs(args.collect()),
+
+        "tasks" | "task" => parse_tasks(args.collect()),
+
+        "distribution" => parse_distribution(args.collect()),
 
         "logs" | "log" => Command::Logs(args.collect()),
+
+        "events" | "monitor" => Command::Events,
 
         // -------------------------------------------------
         // General
@@ -107,6 +160,71 @@ where
 
             Command::Help
         }
+    }
+}
+
+fn parse_tasks(args: Vec<String>) -> Command {
+    match args.as_slice() {
+        [] => Command::Tasks(TaskCommand::List),
+        [command] if command == "list" => Command::Tasks(TaskCommand::List),
+        [command, id] if command == "info" => Command::Tasks(TaskCommand::Info(id.clone())),
+        [command, id] if command == "cancel" => Command::Tasks(TaskCommand::Cancel(id.clone())),
+        [command, id] if command == "retry" => Command::Tasks(TaskCommand::Retry(id.clone())),
+        [command, id] if command == "logs" => Command::Tasks(TaskCommand::Logs(id.clone())),
+        [command, id] if command == "result" => Command::Tasks(TaskCommand::Result(id.clone())),
+        _ => Command::Help,
+    }
+}
+
+fn parse_workers(args: Vec<String>) -> Command {
+    match args.as_slice() {
+        [] => Command::Workers(WorkerCommand::List),
+        [command] if command == "list" => Command::Workers(WorkerCommand::List),
+        [command] if command == "stats" => Command::Workers(WorkerCommand::Stats(None)),
+        [command, id] if command == "info" => Command::Workers(WorkerCommand::Info(id.clone())),
+        [command, id] if command == "ping" => Command::Workers(WorkerCommand::Ping(id.clone())),
+        [command, id] if command == "pause" => Command::Workers(WorkerCommand::Pause(id.clone())),
+        [command, id] if command == "resume" => Command::Workers(WorkerCommand::Resume(id.clone())),
+        [command, id] if command == "remove" => Command::Workers(WorkerCommand::Remove(id.clone())),
+        [command, id] if command == "stats" => {
+            Command::Workers(WorkerCommand::Stats(Some(id.clone())))
+        }
+        _ => Command::Help,
+    }
+}
+
+fn parse_jobs(args: Vec<String>) -> Command {
+    match args.as_slice() {
+        [] => Command::JobControl(JobCommand::List),
+        [command] if command == "list" => Command::JobControl(JobCommand::List),
+        [command, id] if command == "info" => Command::JobControl(JobCommand::Info(id.clone())),
+        [command, id] if command == "stats" => Command::JobControl(JobCommand::Stats(id.clone())),
+        [command, id] if command == "partitions" => {
+            Command::JobControl(JobCommand::Partitions(id.clone()))
+        }
+        [command, id] if command == "cancel" => Command::JobControl(JobCommand::Cancel(id.clone())),
+        [command, id] if command == "pause" => Command::JobControl(JobCommand::Pause(id.clone())),
+        [command, id] if command == "resume" => Command::JobControl(JobCommand::Resume(id.clone())),
+        [command, rest @ ..] if command == "run" => {
+            Command::JobControl(JobCommand::Run(rest.to_vec()))
+        }
+        _ => Command::Help,
+    }
+}
+
+fn parse_distribution(args: Vec<String>) -> Command {
+    match args.as_slice() {
+        [command] if command == "show" => Command::Distribution(DistributionCommand::Show(None)),
+        [command, id] if command == "show" => {
+            Command::Distribution(DistributionCommand::Show(Some(id.clone())))
+        }
+        [command, id] if command == "auto" => {
+            Command::Distribution(DistributionCommand::Auto(id.clone()))
+        }
+        [command, id, allocations @ ..] if command == "set" => {
+            Command::Distribution(DistributionCommand::Set(id.clone(), allocations.to_vec()))
+        }
+        _ => Command::Help,
     }
 }
 

@@ -58,53 +58,55 @@
             </TabItem>
 
             <TabItem Header="Workers">
-                <ScrollViewer Padding="0,18,0,0">
-                    <ItemsControl ItemsSource="{Binding Workers}">
-                        <ItemsControl.ItemTemplate>
+                <Grid ColumnDefinitions="2*,3*" ColumnSpacing="16" Margin="0,18,0,0">
+                    <ListBox ItemsSource="{Binding Workers}" SelectedItem="{Binding SelectedWorker}">
+                        <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <Border Margin="0,0,0,10" Padding="16" Background="#192331" CornerRadius="8">
-                                    <Grid ColumnDefinitions="*,Auto">
-                                        <StackPanel>
-                                            <TextBlock FontSize="17" FontWeight="SemiBold" Text="{Binding Info.Id}" />
-                                            <TextBlock Margin="0,5,0,0" Foreground="#B5C2D2" Text="{Binding State}" />
-                                            <TextBlock Margin="0,8,0,0" Foreground="#9AA7B8" Text="{Binding Info.Os}" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                                <TextBlock Text="CPU " />
-                                                <TextBlock Text="{Binding Info.CpuCores}" />
-                                                <TextBlock Text=" cores" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
-                                                <TextBlock Text="RAM " />
-                                                <TextBlock Text="{Binding Info.RamGb}" />
-                                                <TextBlock Text=" GB" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
-                                                <TextBlock Foreground="#9AA7B8" Text="Available: " />
-                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AvailableCpuCores}" />
-                                                <TextBlock Foreground="#9AA7B8" Text=" CPU · " />
-                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AvailableRamGb}" />
-                                                <TextBlock Foreground="#9AA7B8" Text=" GB" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
-                                                <TextBlock Foreground="#9AA7B8" Text="Capacity estimate: " />
-                                                <TextBlock Foreground="#9AA7B8" Text="{Binding CapacityScore, StringFormat={}{0:0.00}}" />
-                                            </StackPanel>
-                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,5,0,0">
-                                                <TextBlock Foreground="#9AA7B8" Text="Allocated: " />
-                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AllocatedCpuCores}" />
-                                                <TextBlock Foreground="#9AA7B8" Text=" CPU · " />
-                                                <TextBlock Foreground="#9AA7B8" Text="{Binding AllocatedRamGb}" />
-                                                <TextBlock Foreground="#9AA7B8" Text=" GB" />
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
+                                <StackPanel Margin="6" Spacing="4">
+                                    <TextBlock FontWeight="SemiBold" Text="{Binding Info.Id}" />
+                                    <TextBlock Foreground="#B5C2D2" Text="{Binding State}" />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding Info.Os} · {Binding Info.Arch}" />
+                                    <TextBlock Foreground="#9AA7B8" Text="CPU {Binding Info.CpuCores} · RAM {Binding Info.RamGb} GB" />
+                                    <TextBlock Foreground="#9AA7B8" Text="Load {Binding Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · active {Binding Telemetry.ActiveTasks}" />
+                                </StackPanel>
                             </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </ScrollViewer>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
+                        <ScrollViewer>
+                            <StackPanel Spacing="8">
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Worker details" />
+                                <TextBlock Text="{Binding SelectedWorker.Info.Id}" />
+                                <TextBlock Foreground="#B5C2D2" Text="{Binding SelectedWorker.State}" />
+                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.Hostname}" />
+                                <TextBlock Foreground="#9AA7B8" Text="CPU model: {Binding SelectedWorker.Info.CpuModel}" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                    <TextBlock Foreground="#9AA7B8" Text="CPU allocated: " />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AllocatedCpuCores}" />
+                                    <TextBlock Foreground="#9AA7B8" Text=" / " />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.CpuCores}" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                    <TextBlock Foreground="#9AA7B8" Text="RAM allocated: " />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AllocatedRamGb}" />
+                                    <TextBlock Foreground="#9AA7B8" Text=" / " />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.RamGb}" />
+                                    <TextBlock Foreground="#9AA7B8" Text=" GB" />
+                                </StackPanel>
+                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AssignedJobs.Count}" />
+                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.LastHeartbeat}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="Telemetry CPU: {Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · RAM available: {Binding SelectedWorker.Telemetry.MemoryAvailableGb} GB" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="Scheduler capacity: {Binding SelectedWorker.EffectiveCapacity, StringFormat={}{0:0.##}} · performance factor: {Binding SelectedWorker.PerformanceFactor, StringFormat={}{0:0.##}}" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Command="{Binding PingWorkerCommand}" Content="Ping" />
+                                    <Button Command="{Binding PauseWorkerCommand}" Content="Pause" />
+                                    <Button Command="{Binding ResumeWorkerCommand}" Content="Resume" />
+                                    <Button Command="{Binding RemoveWorkerCommand}" Content="Remove" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
             </TabItem>
 
             <TabItem Header="Jobs">
@@ -130,7 +132,14 @@
                     </Border>
                     <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
                         <ScrollViewer>
-                            <TextBlock Foreground="#D7E0EB" Text="{Binding JobDetails}" TextWrapping="Wrap" />
+                            <StackPanel Spacing="10">
+                                <TextBlock Foreground="#D7E0EB" Text="{Binding JobDetails}" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Command="{Binding CancelJobCommand}" Content="Cancel" />
+                                    <Button Command="{Binding PauseJobCommand}" Content="Pause" />
+                                    <Button Command="{Binding ResumeJobCommand}" Content="Resume" />
+                                </StackPanel>
+                            </StackPanel>
                         </ScrollViewer>
                     </Border>
                 </Grid>
@@ -139,10 +148,20 @@
             <TabItem Header="Run">
                 <ScrollViewer Padding="0,18,0,0">
                     <StackPanel MaxWidth="720" Spacing="12">
-                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="Run workload" />
-                        <TextBlock Foreground="#9AA7B8" Text="The UI submits jobs through the Controller HTTP API. Workers execute the native workload." TextWrapping="Wrap" />
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="Run task" />
+                        <TextBlock Foreground="#9AA7B8" Text="Submit a native workload or an OS process through the Controller HTTP API. Process tasks run on a trusted worker with bounded capture and timeout enforcement." TextWrapping="Wrap" />
+                        <TextBlock Margin="0,8,0,0" Text="Task type" />
+                        <ComboBox ItemsSource="{Binding TaskTypes}" SelectedItem="{Binding SelectedTaskType}" />
                         <TextBlock Margin="0,8,0,0" Text="Workload" />
                         <ComboBox ItemsSource="{Binding Workloads}" SelectedItem="{Binding SelectedWorkload}" />
+                        <TextBlock Text="Executable or command" />
+                        <TextBox Text="{Binding Executable}" PlaceholderText="/usr/bin/echo or C:\\Windows\\System32\\cmd.exe" />
+                        <TextBlock Text="Script runtime" />
+                        <TextBox Text="{Binding ScriptRuntime}" PlaceholderText="python" />
+                        <TextBlock Text="Script path" />
+                        <TextBox Text="{Binding ScriptPath}" PlaceholderText="script.py" />
+                        <TextBlock Text="Process/script arguments" />
+                        <TextBox Text="{Binding GeneralArguments}" PlaceholderText="hello world" />
                         <TextBlock Margin="0,8,0,0" Text="Work distribution" />
                         <StackPanel Orientation="Horizontal" Spacing="16">
                             <RadioButton GroupName="DistributionMode" Content="Automatic" IsChecked="{Binding IsAutomaticDistribution}" />

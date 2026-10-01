@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +93,44 @@ func TestRegisterRoundTrip(t *testing.T) {
 	}
 	if out.ID != in.ID || out.CPUCores != in.CPUCores || out.GPU.Model != in.GPU.Model {
 		t.Fatalf("register mismatch: %#v %#v", in, out)
+	}
+}
+
+func TestHeartbeatRejectsTrailingData(t *testing.T) {
+	payload := make([]byte, 32)
+	payload = append(payload, 0)
+	if _, _, err := decodeHeartbeat(payload); err == nil {
+		t.Fatal("heartbeat decoder accepted trailing bytes")
+	}
+}
+
+func TestGeneralTaskWireRoundTrip(t *testing.T) {
+	in := GeneralTaskEnvelope{
+		TaskID:  42,
+		JobID:   "TASK-42",
+		Attempt: 2,
+		Spec: GeneralTaskSpec{
+			Type: TaskTypeScript, Version: "1", Runtime: "python", Script: "main.py",
+			Arguments: []string{"--name", "Nodren"}, Environment: map[string]string{"MODE": "test"},
+			WorkingDirectory: ".", StdinB64: "aGVsbG8=", TimeoutMS: 1000,
+			StdoutLimitBytes: 2048, StderrLimitBytes: 2048,
+			Requirements:    ResourceRequirements{CPUCores: 2, RAMGB: 4, MaxRAMGB: 8, GPURequired: true, GPUCount: 1, VRAMGB: 8, AcceleratorType: "CUDA", GPUCapabilities: []string{"tensor"}},
+			Target:          TaskTarget{OS: "windows", Arch: "x86_64", RequiredRuntimes: []string{"python"}, AllowedWorkerIDs: []string{"worker-a"}},
+			InputArtifacts:  []TaskArtifact{{ID: "ART-1", Name: "input.bin", Size: 3, SHA256: strings.Repeat("a", 64), Kind: "input"}},
+			Strategy:        ExecutionSingle,
+			PackageManifest: &TaskPackageManifest{EntryPoint: "main.py", Runtime: "python", Arguments: []string{"--ready"}, Environment: map[string]string{"MODEL": "demo"}},
+			Retry:           RetryPolicy{MaxRetries: 2},
+		},
+	}
+	payload, err := encodeGeneralTask(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := decodeGeneralTask(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TaskID != in.TaskID || out.Spec.Runtime != "python" || out.Spec.Environment["MODE"] != "test" || len(out.Spec.InputArtifacts) != 1 || out.Spec.Retry.MaxRetries != 2 || out.Spec.Requirements.GPUCount != 1 || out.Spec.PackageManifest == nil || out.Spec.PackageManifest.Environment["MODEL"] != "demo" {
+		t.Fatalf("general task mismatch: %#v", out)
 	}
 }

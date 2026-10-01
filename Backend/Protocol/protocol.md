@@ -27,10 +27,32 @@ Maximum frame payload: 16 MiB.
 8. `ERROR`
 9. `GOODBYE`
 10. `READY`
+11. `TASK_SUBMIT`
+12. `TASK_ACK`
+13. `TASK_CANCEL`
+14. `TASK_STATE`
+15. `TASK_RESULT`
+16. `ARTIFACT_BEGIN`
+17. `ARTIFACT_CHUNK`
+18. `ARTIFACT_END`
+19. `CAPABILITIES`
 
 The Go controller owns scheduling and job placement. The Rust worker owns local resource validation and execution management.
 
 HTTP/JSON is only the management API. The node data plane uses the binary protocol.
+
+`TASK_SUBMIT` carries a typed `GeneralTaskEnvelope`, not JSON-over-TCP. It
+contains the task type (`PROCESS`, `SCRIPT`, `COMMAND`, or
+`NATIVE_WORKLOAD`), structured arguments and environment, resource/target
+constraints, timeout/output limits, retry policy, and artifact metadata.
+`TASK_RESULT` carries status, an optional exit code, bounded stdout/stderr,
+truncation flags, duration, and an error category.
+
+Input artifacts are transferred before `TASK_SUBMIT` with
+`ARTIFACT_BEGIN`/`ARTIFACT_CHUNK`/`ARTIFACT_END`. Chunks are bounded and the
+controller stores artifact bytes separately from the main state snapshot;
+metadata includes size and SHA-256. The worker stages input files in a
+task-local directory.
 
 ## Resources and scheduling
 
@@ -99,3 +121,18 @@ supports:
 machine-readable `error_code` after the existing result fields. Current
 failure categories include `malformed_payload`, `unsupported_workload`,
 `resource_requirements`, `execution_failed`, and `internal_error`.
+
+## General execution and trust model
+
+The Rust worker owns OS process execution. `PROCESS` and `COMMAND` use
+structured arguments without shell concatenation. `SCRIPT` selects an
+explicitly named installed runtime (Python, Node, shell, or PowerShell) and
+validates its advertised availability before execution. Cancellation kills the
+child process; timeout kills it after the task deadline. Stdout and stderr are
+captured with bounded per-task buffers.
+
+Nodren currently assumes a trusted cluster: a registered worker may execute a
+requested executable with its OS privileges. Protocol validation, task-type
+allowlisting, path/name checks, resource checks, timeouts, and cancellation
+are implemented, but this is not a sandbox and does not provide
+authentication, authorization, containers, or VM isolation.
