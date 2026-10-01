@@ -13,7 +13,7 @@
 
 Nodren provides a Controller, worker runtime, scheduler, artifact system, execution layer, native compute core, and CLI that work together to submit and execute workloads across a cluster.
 
-> **⚠️ Beta Release**
+**⚠️ Beta Release**
 >
 > Nodren is currently in **Beta**. The project is actively being developed, and some features may change, break, or be incomplete.
 >
