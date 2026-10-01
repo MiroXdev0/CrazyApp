@@ -45,12 +45,44 @@
                                 </StackPanel>
                             </Border>
                         </Grid>
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
+                            <Border Padding="18" Background="#192331" CornerRadius="8">
+                                <StackPanel Spacing="7">
+                                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Cluster health" />
+                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ClusterSummary}" TextWrapping="Wrap" />
+                                    <TextBlock Foreground="#9AA7B8" Text="{Binding ControllerUptime}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
+                                <StackPanel Spacing="7">
+                                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Dynamic resource usage" />
+                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ResourceSummary}" TextWrapping="Wrap" />
+                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ActivitySummary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
                         <Border Padding="18" Background="#192331" CornerRadius="8">
                             <StackPanel Spacing="8">
                                 <TextBlock FontSize="18" FontWeight="SemiBold" Text="Controller" />
                                 <TextBlock Foreground="#B5C2D2" Text="{Binding ControllerUrl}" />
                                 <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
                                 <Button HorizontalAlignment="Left" Padding="18,8" Command="{Binding RefreshCommand}" Content="Refresh now" />
+                            </StackPanel>
+                        </Border>
+                        <Border Padding="18" Background="#192331" CornerRadius="8">
+                            <StackPanel Spacing="8">
+                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Recent job activity" />
+                                <ListBox ItemsSource="{Binding Jobs}" MaxHeight="180">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid ColumnDefinitions="2*,*,*" Margin="4">
+                                                <TextBlock Text="{Binding Command}" />
+                                                <TextBlock Grid.Column="1" Foreground="#B5C2D2" Text="{Binding Status}" />
+                                                <TextBlock Grid.Column="2" Foreground="#9AA7B8" Text="{Binding Distribution.ProgressPercent, StringFormat={}{0:0.#}%}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -96,6 +128,8 @@
                                 <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AssignedJobs.Count}" />
                                 <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.LastHeartbeat}" TextWrapping="Wrap" />
                                 <TextBlock Foreground="#9AA7B8" Text="Telemetry CPU: {Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · RAM available: {Binding SelectedWorker.Telemetry.MemoryAvailableGb} GB" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="Tasks active: {Binding SelectedWorker.Telemetry.ActiveTasks} · completed: {Binding SelectedWorker.Telemetry.CompletedTasks} · failed: {Binding SelectedWorker.Telemetry.FailedTasks}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="GPU (static): {Binding SelectedWorker.Info.Gpu.Vendor} {Binding SelectedWorker.Info.Gpu.Model} · {Binding SelectedWorker.Info.Gpu.VramGb} GB" TextWrapping="Wrap" />
                                 <TextBlock Foreground="#9AA7B8" Text="Scheduler capacity: {Binding SelectedWorker.EffectiveCapacity, StringFormat={}{0:0.##}} · performance factor: {Binding SelectedWorker.PerformanceFactor, StringFormat={}{0:0.##}}" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <Button Command="{Binding PingWorkerCommand}" Content="Ping" />

@@ -480,13 +480,17 @@ fn devices() -> Result<(), CommandError> {
 fn print_worker_stats(stats: &crate::api::WorkerStats) -> Result<(), CommandError> {
     let node = &stats.node;
     println!(
-        "Worker {} state={} capacity={:.2} telemetry_age={}ms CPU={:.1}% active_tasks={} throughput={:.2} units/s factor={:.2}",
+        "Worker {} state={} capacity={:.2} telemetry_age={}ms CPU={:.1}% RAM={:.1}% available_ram={}GB active_tasks={} completed={} failed={} throughput={:.2} units/s factor={:.2}",
         node.info.id,
         node.state,
         stats.scheduler_weight,
         stats.telemetry_age_ms,
         node.telemetry.cpu_utilization_percent,
+        node.telemetry.memory_utilization_percent,
+        node.telemetry.memory_available_gb,
         node.telemetry.active_tasks,
+        node.telemetry.completed_tasks,
+        node.telemetry.failed_tasks,
         node.observed_throughput_units_per_second,
         node.performance_factor
     );

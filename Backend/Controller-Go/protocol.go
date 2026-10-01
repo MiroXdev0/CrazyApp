@@ -88,8 +88,11 @@ type WorkerTelemetry struct {
 	Timestamp                time.Time `json:"timestamp"`
 	UptimeSeconds            uint64    `json:"uptime_seconds"`
 	ActiveTasks              uint32    `json:"active_tasks"`
+	CompletedTasks           uint64    `json:"completed_tasks"`
+	FailedTasks              uint64    `json:"failed_tasks"`
 	CPUUtilizationPercent    float64   `json:"cpu_utilization_percent"`
 	MemoryAvailableGB        uint64    `json:"memory_available_gb"`
+	MemoryAvailableKnown     bool      `json:"memory_available_known"`
 	MemoryUtilizationPercent float64   `json:"memory_utilization_percent"`
 }
 
@@ -943,8 +946,19 @@ func encodeHeartbeatTelemetry(unixMilli int64, uptimeSeconds uint64, activeTasks
 	return b
 }
 
+// encodeHeartbeatTelemetryWithCounters is the extended telemetry payload.
+// The 8-byte legacy and 32-byte telemetry payloads remain valid so older
+// workers can continue to connect to a newer Controller.
+func encodeHeartbeatTelemetryWithCounters(unixMilli int64, uptimeSeconds uint64, activeTasks uint32, completedTasks, failedTasks uint64, cpuPercent, memoryAvailableGB float64) []byte {
+	b := make([]byte, 48)
+	copy(b, encodeHeartbeatTelemetry(unixMilli, uptimeSeconds, activeTasks, cpuPercent, memoryAvailableGB))
+	binary.LittleEndian.PutUint64(b[32:40], completedTasks)
+	binary.LittleEndian.PutUint64(b[40:48], failedTasks)
+	return b
+}
+
 func decodeHeartbeat(data []byte) (int64, WorkerTelemetry, error) {
-	if len(data) != 8 && len(data) != 32 {
+	if len(data) != 8 && len(data) != 32 && len(data) != 48 {
 		return 0, WorkerTelemetry{}, errors.New("invalid heartbeat payload")
 	}
 	timestamp := int64(binary.LittleEndian.Uint64(data))
@@ -965,6 +979,11 @@ func decodeHeartbeat(data []byte) (int64, WorkerTelemetry, error) {
 	availableMB := binary.LittleEndian.Uint64(data[24:32])
 	if availableMB != math.MaxUint64 {
 		telemetry.MemoryAvailableGB = availableMB / 1024
+		telemetry.MemoryAvailableKnown = true
+	}
+	if len(data) == 48 {
+		telemetry.CompletedTasks = binary.LittleEndian.Uint64(data[32:40])
+		telemetry.FailedTasks = binary.LittleEndian.Uint64(data[40:48])
 	}
 	return timestamp, telemetry, nil
 }

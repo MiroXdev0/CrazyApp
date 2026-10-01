@@ -57,6 +57,9 @@ public sealed class NodrenApiClient : IDisposable
     public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken = default)
         => GetAsync<HealthResponse>("health", cancellationToken);
 
+    public Task<ClusterStatus> GetClusterStatusAsync(CancellationToken cancellationToken = default)
+        => GetAsync<ClusterStatus>("v1/cluster/status", cancellationToken);
+
     public Task<List<NodeRecord>> GetNodesAsync(CancellationToken cancellationToken = default)
         => GetAsync<List<NodeRecord>>("v1/nodes", cancellationToken);
 

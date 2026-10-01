@@ -15,7 +15,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
 };
@@ -176,6 +176,8 @@ pub struct WorkerExecutor {
     queue: Arc<WorkQueue>,
     workers: Vec<JoinHandle<()>>,
     active_tasks: Arc<AtomicU32>,
+    completed_tasks: Arc<AtomicU64>,
+    failed_tasks: Arc<AtomicU64>,
     resource_gate: Arc<ResourceGate>,
     artifact_pending: Arc<Mutex<HashMap<(u64, String), StoredArtifact>>>,
     artifact_ready: Arc<Mutex<HashMap<(u64, String), StoredArtifact>>>,
@@ -191,6 +193,8 @@ impl WorkerExecutor {
         let queue = Arc::new(WorkQueue::new(worker_count.saturating_mul(4).max(16)));
         let gate = Arc::new(ResourceGate::new(&node));
         let active_tasks = Arc::new(AtomicU32::new(0));
+        let completed_tasks = Arc::new(AtomicU64::new(0));
+        let failed_tasks = Arc::new(AtomicU64::new(0));
         let general_cancel = Arc::new(Mutex::new(HashMap::new()));
         let mut workers = Vec::with_capacity(worker_count);
 
@@ -200,6 +204,8 @@ impl WorkerExecutor {
             let node_ref = node.clone();
             let core_ref = Arc::clone(&core);
             let active_ref = Arc::clone(&active_tasks);
+            let completed_ref = Arc::clone(&completed_tasks);
+            let failed_ref = Arc::clone(&failed_tasks);
             let name = format!("nodren-task-{index}");
             workers.push(
                 thread::Builder::new()
@@ -214,6 +220,8 @@ impl WorkerExecutor {
                             } else {
                                 resource_failure_result(&node_ref, &item.task)
                             };
+
+                            record_task_outcome(&result.status, &completed_ref, &failed_ref);
 
                             let payload = match encode_task_results(&[result]) {
                                 Ok(payload) => payload,
@@ -249,6 +257,8 @@ impl WorkerExecutor {
             queue,
             workers,
             active_tasks,
+            completed_tasks,
+            failed_tasks,
             resource_gate: gate,
             artifact_pending: Arc::new(Mutex::new(HashMap::new())),
             artifact_ready: Arc::new(Mutex::new(HashMap::new())),
@@ -280,6 +290,14 @@ impl WorkerExecutor {
         Arc::clone(&self.active_tasks)
     }
 
+    pub fn completed_tasks_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.completed_tasks)
+    }
+
+    pub fn failed_tasks_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.failed_tasks)
+    }
+
     pub fn submit_general(
         &self,
         task: GeneralTaskEnvelope,
@@ -289,6 +307,7 @@ impl WorkerExecutor {
         connection_failed: Arc<AtomicBool>,
     ) -> io::Result<()> {
         if let Err(error) = validate_general_task(&node, &task) {
+            self.failed_tasks.fetch_add(1, Ordering::AcqRel);
             let result = crate::protocol::GeneralTaskResult {
                 task_id: task.task_id,
                 job_id: task.job_id.clone(),
@@ -317,6 +336,7 @@ impl WorkerExecutor {
             let stored = match self.take_artifact(task.task_id, &artifact.id) {
                 Some(stored) => stored,
                 None => {
+                    self.failed_tasks.fetch_add(1, Ordering::AcqRel);
                     let result = crate::protocol::GeneralTaskResult {
                         task_id: task.task_id,
                         job_id: task.job_id.clone(),
@@ -349,6 +369,8 @@ impl WorkerExecutor {
             .map_err(|_| io::Error::other("general task mutex poisoned"))?
             .insert(task.task_id, Arc::clone(&cancelled));
         let active = Arc::clone(&self.active_tasks);
+        let completed = Arc::clone(&self.completed_tasks);
+        let failed = Arc::clone(&self.failed_tasks);
         let gate = Arc::clone(&self.resource_gate);
         let cancel_map = Arc::clone(&self.general_cancel);
         let thread = thread::Builder::new()
@@ -357,6 +379,7 @@ impl WorkerExecutor {
                 active.fetch_add(1, Ordering::AcqRel);
                 let _permit = gate.acquire_requirements(task.spec.cpu_cores, task.spec.ram_gb);
                 let result = process_executor::execute(task.clone(), cancelled, input_artifacts);
+                record_task_outcome(&result.status, &completed, &failed);
                 let write_result = encode_general_task_result(&result)
                     .map_err(|_| io::Error::other("general task result encoding failed"))
                     .and_then(|payload| {
@@ -537,6 +560,14 @@ impl WorkerExecutor {
                 true
             })
             .unwrap_or(false)
+    }
+}
+
+fn record_task_outcome(status: &str, completed: &AtomicU64, failed: &AtomicU64) {
+    if status == "COMPLETED" {
+        completed.fetch_add(1, Ordering::AcqRel);
+    } else {
+        failed.fetch_add(1, Ordering::AcqRel);
     }
 }
 

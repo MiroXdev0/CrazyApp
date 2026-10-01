@@ -41,6 +41,18 @@ The Go controller owns scheduling and job placement. The Rust worker owns local 
 
 HTTP/JSON is only the management API. The node data plane uses the binary protocol.
 
+`HEARTBEAT` is backward-conscious: an 8-byte timestamp is accepted from legacy
+workers, the 32-byte telemetry payload adds uptime, active task count, CPU
+utilization in milli-percent, and available RAM in MiB, and the current 48-byte
+payload appends completed-task and failed-task counters as `u64` values. Unknown
+CPU or memory measurements use all-ones sentinels. The Controller stores the
+latest payload and marks a worker `LOST` after 15 seconds without a heartbeat.
+
+The management API exposes `/v1/cluster/status` for aggregate capacity,
+dynamic resource measurements, controller uptime, worker health, and job/task
+counters. `/v1/jobs/active` returns non-terminal jobs; individual job
+progress remains available through `/v1/jobs/{id}` and `/v1/jobs/{id}/stats`.
+
 `TASK_SUBMIT` carries a typed `GeneralTaskEnvelope`, not JSON-over-TCP. It
 contains the task type (`PROCESS`, `SCRIPT`, `COMMAND`, or
 `NATIVE_WORKLOAD`), structured arguments and environment, resource/target

@@ -9,7 +9,8 @@ use native_core::NativeCore;
 use protocol::{
     Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult, decode_artifact_begin,
     decode_artifact_chunk, decode_artifact_end, decode_general_task, decode_task_batch,
-    encode_heartbeat, encode_register, encode_register_ack, read_frame, write_frame,
+    encode_heartbeat, encode_heartbeat_with_counters, encode_register, encode_register_ack,
+    read_frame, write_frame,
 };
 
 use std::{
@@ -334,37 +335,101 @@ fn decode_task_cancel(data: &[u8]) -> io::Result<u64> {
 }
 
 fn cpu_sample() -> Option<(u64, u64)> {
-    if !cfg!(target_os = "linux") {
-        return None;
+    if cfg!(target_os = "linux") {
+        let line = std::fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .next()?
+            .to_string();
+        let values: Vec<u64> = line
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|value| value.parse().ok())
+            .collect();
+        if values.len() < 4 {
+            return None;
+        }
+        let idle = values[3].saturating_add(*values.get(4).unwrap_or(&0));
+        let total: u64 = values.iter().copied().sum();
+        return Some((total.saturating_sub(idle), total));
     }
-    let line = std::fs::read_to_string("/proc/stat")
-        .ok()?
-        .lines()
-        .next()?
-        .to_string();
-    let values: Vec<u64> = line
-        .split_whitespace()
-        .skip(1)
-        .filter_map(|value| value.parse().ok())
-        .collect();
-    if values.len() < 4 {
-        return None;
+
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct FileTime {
+            low: u32,
+            high: u32,
+        }
+
+        unsafe extern "system" {
+            fn GetSystemTimes(
+                idle: *mut FileTime,
+                kernel: *mut FileTime,
+                user: *mut FileTime,
+            ) -> i32;
+        }
+
+        let mut idle = FileTime { low: 0, high: 0 };
+        let mut kernel = FileTime { low: 0, high: 0 };
+        let mut user = FileTime { low: 0, high: 0 };
+        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } != 0 {
+            let to_u64 = |value: &FileTime| ((value.high as u64) << 32) | value.low as u64;
+            let idle_ticks = to_u64(&idle);
+            let total_ticks = to_u64(&kernel).saturating_add(to_u64(&user));
+            return Some((total_ticks.saturating_sub(idle_ticks), total_ticks));
+        }
     }
-    let idle = values[3].saturating_add(*values.get(4).unwrap_or(&0));
-    let total: u64 = values.iter().copied().sum();
-    Some((total.saturating_sub(idle), total))
+
+    None
 }
 
 fn available_memory_gb() -> Option<u64> {
-    if !cfg!(target_os = "linux") {
-        return None;
+    if cfg!(target_os = "linux") {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        return text.lines().find_map(|line| {
+            let rest = line.strip_prefix("MemAvailable:")?;
+            let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+            Some(kb / 1024 / 1024)
+        });
     }
-    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
-    text.lines().find_map(|line| {
-        let rest = line.strip_prefix("MemAvailable:")?;
-        let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
-        Some(kb / 1024 / 1024)
-    })
+
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct MemoryStatusEx {
+            dw_length: u32,
+            dw_memory_load: u32,
+            ull_total_phys: u64,
+            ull_avail_phys: u64,
+            ull_total_page_file: u64,
+            ull_avail_page_file: u64,
+            ull_total_virtual: u64,
+            ull_avail_virtual: u64,
+            ull_avail_extended_virtual: u64,
+        }
+
+        unsafe extern "system" {
+            fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+        }
+
+        let mut status = MemoryStatusEx {
+            dw_length: std::mem::size_of::<MemoryStatusEx>() as u32,
+            dw_memory_load: 0,
+            ull_total_phys: 0,
+            ull_avail_phys: 0,
+            ull_total_page_file: 0,
+            ull_avail_page_file: 0,
+            ull_total_virtual: 0,
+            ull_avail_virtual: 0,
+            ull_avail_extended_virtual: 0,
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+            return Some(status.ull_avail_phys / 1024 / 1024 / 1024);
+        }
+    }
+
+    None
 }
 
 fn resource_failure_result(node: &NodeInfo, task: &Task) -> TaskResult {
@@ -461,6 +526,8 @@ fn run_connection(
     let heartbeat_stop = Arc::clone(&stop_heartbeat);
     let heartbeat_error = Arc::clone(&connection_failed);
     let active_tasks = executor.active_tasks_counter();
+    let completed_tasks = executor.completed_tasks_counter();
+    let failed_tasks = executor.failed_tasks_counter();
     let heartbeat_thread = thread::spawn(move || {
         let mut previous_cpu = None;
         loop {
@@ -481,10 +548,12 @@ fn run_connection(
                     Some((busy_delta as f64 / total_delta as f64) * 100.0)
                 }
             });
-            let payload = encode_heartbeat(
+            let payload = encode_heartbeat_with_counters(
                 now_millis(),
                 started_at.elapsed().as_secs(),
                 active_tasks.load(Ordering::Acquire),
+                completed_tasks.load(Ordering::Acquire),
+                failed_tasks.load(Ordering::Acquire),
                 cpu_percent,
                 available_memory_gb(),
             );

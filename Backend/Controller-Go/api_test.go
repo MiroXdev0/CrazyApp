@@ -378,3 +378,64 @@ func TestAPIObservabilityEndpoints(t *testing.T) {
 		t.Fatalf("unexpected partition response: %#v", partitions)
 	}
 }
+
+func TestAPIClusterStatusAndStaleWorkerDetection(t *testing.T) {
+	controller := NewController("127.0.0.1:9000", "127.0.0.1:8080")
+	node := readyNode("worker-a", 8, 32)
+	node.Telemetry = WorkerTelemetry{
+		Timestamp:                time.Now().UTC(),
+		ActiveTasks:              2,
+		CompletedTasks:           7,
+		FailedTasks:              1,
+		CPUUtilizationPercent:    40,
+		MemoryAvailableGB:        20,
+		MemoryAvailableKnown:     true,
+		MemoryUtilizationPercent: 37.5,
+	}
+	node.CompletedTasks = 7
+	node.FailedTasks = 1
+	controller.nodes[node.Info.ID] = node
+
+	server := httptest.NewServer(controller.routes())
+	defer server.Close()
+	response, err := http.Get(server.URL + "/v1/cluster/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected cluster status endpoint to succeed, got %d", response.StatusCode)
+	}
+	var status clusterStatusResponse
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Workers != 1 || status.OnlineWorkers != 1 || status.TotalCPUCores != 8 || status.TotalRAMGB != 32 {
+		t.Fatalf("unexpected cluster capacity/status: %#v", status)
+	}
+	if status.ActiveTasks != 2 || status.TotalCompletedTasks != 7 || status.TotalFailedTasks != 1 || status.CPUUtilizationPercent != 40 {
+		t.Fatalf("unexpected cluster telemetry: %#v", status)
+	}
+	job, err := controller.createJob(jobRequest{Command: "sum"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeResponse, err := http.Get(server.URL + "/v1/jobs/active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activeResponse.Body.Close()
+	var activeJobs []Job
+	if err := json.NewDecoder(activeResponse.Body).Decode(&activeJobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(activeJobs) != 1 || activeJobs[0].ID != job.ID {
+		t.Fatalf("unexpected active jobs response: %#v", activeJobs)
+	}
+
+	controller.nodes[node.Info.ID].LastHeartbeat = time.Now().Add(-16 * time.Second)
+	lost := controller.markStaleWorkers(time.Now())
+	if len(lost) != 1 || controller.nodes[node.Info.ID].State != NodeLost {
+		t.Fatalf("stale worker was not marked lost: lost=%v node=%#v", lost, controller.nodes[node.Info.ID])
+	}
+}

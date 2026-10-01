@@ -46,6 +46,18 @@ public partial class MainViewModel : ViewModelBase
     private string _jobSummary = "Jobs: 0 running · 0 queued · 0 completed · 0 failed";
 
     [ObservableProperty]
+    private string _clusterSummary = "Cluster status unavailable.";
+
+    [ObservableProperty]
+    private string _resourceSummary = "Resource telemetry unavailable.";
+
+    [ObservableProperty]
+    private string _activitySummary = "No task activity reported.";
+
+    [ObservableProperty]
+    private string _controllerUptime = "Controller uptime unavailable.";
+
+    [ObservableProperty]
     private bool _isRefreshing;
 
     [ObservableProperty]
@@ -125,9 +137,20 @@ public partial class MainViewModel : ViewModelBase
             var health = await healthTask;
             ReplaceCollection(Workers, await nodesTask);
             ReplaceCollection(Jobs, await jobsTask);
+            ClusterStatus? cluster = null;
+            try
+            {
+                cluster = await _api.GetClusterStatusAsync();
+            }
+            catch (NodrenApiException exception) when (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                // Older Controllers still provide the original health/nodes/jobs
+                // endpoints; keep the dashboard useful during rolling upgrades.
+            }
             ControllerStatus = $"● Controller Online · {health.Service} {health.Version}";
             LastUpdated = $"Updated {DateTime.Now:HH:mm:ss} · {health.Nodes} workers reported by Controller";
             UpdateSummaries();
+            UpdateDashboard(cluster);
             RefreshSelectedJobDetails();
         }
         catch (Exception exception) when (exception is NodrenApiException or HttpRequestException or TaskCanceledException)
@@ -138,6 +161,10 @@ public partial class MainViewModel : ViewModelBase
             Workers.Clear();
             Jobs.Clear();
             UpdateSummaries();
+            ClusterSummary = "Cluster status unavailable.";
+            ResourceSummary = "Resource telemetry unavailable.";
+            ActivitySummary = "No task activity reported.";
+            ControllerUptime = "Controller uptime unavailable.";
         }
         finally
         {
@@ -382,6 +409,36 @@ public partial class MainViewModel : ViewModelBase
         var failed = Jobs.Count(job => job.Status == "FAILED");
         var cancelled = Jobs.Count(job => job.Status == "CANCELLED");
         JobSummary = $"Jobs: {running} running · {queued} queued · {paused} paused · {completed} completed · {failed} failed · {cancelled} cancelled";
+    }
+
+    private void UpdateDashboard(ClusterStatus? cluster)
+    {
+        if (cluster is null)
+        {
+            ClusterSummary = WorkerSummary;
+            ResourceSummary = "Live cluster telemetry is not available from this Controller.";
+            ActivitySummary = JobSummary;
+            ControllerUptime = "Controller uptime unavailable.";
+            return;
+        }
+
+        ClusterSummary = $"{cluster.Status.ToUpperInvariant()} · {cluster.OnlineWorkers} online · {cluster.StaleWorkers} stale · {cluster.OfflineWorkers} offline · {cluster.PausedWorkers} paused";
+        var cpu = cluster.CpuUtilizationPercent < 0 ? "unknown" : $"{cluster.CpuUtilizationPercent:0.#}%";
+        var memory = cluster.MemoryUtilizationPercent < 0 ? "unknown" : $"{cluster.MemoryUtilizationPercent:0.#}%";
+        var dynamicMemory = cluster.MemoryTelemetryWorkers == 0 ? "unknown" : $"{cluster.MemoryAvailableGb} GB";
+        ResourceSummary = $"CPU usage {cpu} · RAM usage {memory} · dynamic RAM available {dynamicMemory} · scheduler capacity {cluster.AvailableCpuCores}/{cluster.TotalCpuCores} cores, {cluster.AvailableRamGb}/{cluster.TotalRamGb} GB";
+        ActivitySummary = $"{cluster.ActiveJobs} active jobs · {cluster.QueuedJobs} queued · {cluster.ActiveTasks} active tasks · {cluster.TotalCompletedTasks} completed tasks · {cluster.TotalFailedTasks} failed tasks · throughput {cluster.ThroughputUnitsPerSecond:0.##} units/s";
+        ControllerUptime = $"Controller uptime {FormatDuration(cluster.UptimeSeconds)} · telemetry from {cluster.TelemetryWorkers} worker(s)";
+    }
+
+    private static string FormatDuration(ulong seconds)
+    {
+        var span = TimeSpan.FromSeconds(seconds);
+        return span.TotalDays >= 1
+            ? $"{(int)span.TotalDays}d {span.Hours}h {span.Minutes}m"
+            : span.TotalHours >= 1
+                ? $"{span.Hours}h {span.Minutes}m {span.Seconds}s"
+                : $"{span.Minutes}m {span.Seconds}s";
     }
 
     private void RefreshSelectedJobDetails()

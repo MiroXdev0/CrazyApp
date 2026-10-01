@@ -100,6 +100,12 @@ func (c *cliClient) health() (cliHealth, error) {
 	return value, err
 }
 
+func (c *cliClient) clusterStatus() (clusterStatusResponse, error) {
+	var value clusterStatusResponse
+	err := c.request(http.MethodGet, "/v1/cluster/status", nil, &value)
+	return value, err
+}
+
 func (c *cliClient) nodes() ([]NodeRecord, error) {
 	var value []NodeRecord
 	err := c.request(http.MethodGet, "/v1/nodes", nil, &value)

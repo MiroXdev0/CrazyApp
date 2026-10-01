@@ -95,6 +95,10 @@ pub struct WorkerTelemetry {
     #[serde(default)]
     pub active_tasks: u32,
     #[serde(default)]
+    pub completed_tasks: u64,
+    #[serde(default)]
+    pub failed_tasks: u64,
+    #[serde(default)]
     pub cpu_utilization_percent: f64,
     #[serde(default)]
     pub memory_available_gb: u64,

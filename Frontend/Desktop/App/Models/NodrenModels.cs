@@ -10,6 +10,60 @@ public sealed class HealthResponse
     public int Nodes { get; set; }
 }
 
+public sealed class ClusterStatus
+{
+    public string Status { get; set; } = string.Empty;
+    public string Service { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    [JsonPropertyName("started_at")]
+    public DateTimeOffset StartedAt { get; set; }
+    [JsonPropertyName("uptime_seconds")]
+    public ulong UptimeSeconds { get; set; }
+    public int Workers { get; set; }
+    [JsonPropertyName("online_workers")]
+    public int OnlineWorkers { get; set; }
+    [JsonPropertyName("offline_workers")]
+    public int OfflineWorkers { get; set; }
+    [JsonPropertyName("stale_workers")]
+    public int StaleWorkers { get; set; }
+    [JsonPropertyName("paused_workers")]
+    public int PausedWorkers { get; set; }
+    [JsonPropertyName("active_jobs")]
+    public int ActiveJobs { get; set; }
+    [JsonPropertyName("queued_jobs")]
+    public int QueuedJobs { get; set; }
+    [JsonPropertyName("completed_jobs")]
+    public int CompletedJobs { get; set; }
+    [JsonPropertyName("failed_jobs")]
+    public int FailedJobs { get; set; }
+    [JsonPropertyName("active_tasks")]
+    public ulong ActiveTasks { get; set; }
+    [JsonPropertyName("total_completed_tasks")]
+    public ulong TotalCompletedTasks { get; set; }
+    [JsonPropertyName("total_failed_tasks")]
+    public ulong TotalFailedTasks { get; set; }
+    [JsonPropertyName("total_cpu_cores")]
+    public ulong TotalCpuCores { get; set; }
+    [JsonPropertyName("available_cpu_cores")]
+    public ulong AvailableCpuCores { get; set; }
+    [JsonPropertyName("total_ram_gb")]
+    public ulong TotalRamGb { get; set; }
+    [JsonPropertyName("available_ram_gb")]
+    public ulong AvailableRamGb { get; set; }
+    [JsonPropertyName("memory_available_gb")]
+    public ulong MemoryAvailableGb { get; set; }
+    [JsonPropertyName("cpu_utilization_percent")]
+    public double CpuUtilizationPercent { get; set; }
+    [JsonPropertyName("memory_utilization_percent")]
+    public double MemoryUtilizationPercent { get; set; }
+    [JsonPropertyName("telemetry_workers")]
+    public int TelemetryWorkers { get; set; }
+    [JsonPropertyName("memory_telemetry_workers")]
+    public int MemoryTelemetryWorkers { get; set; }
+    [JsonPropertyName("throughput_units_per_second")]
+    public double ThroughputUnitsPerSecond { get; set; }
+}
+
 public sealed class GpuInfo
 {
     public string Vendor { get; set; } = string.Empty;
@@ -83,10 +137,16 @@ public sealed class WorkerTelemetry
     public ulong UptimeSeconds { get; set; }
     [JsonPropertyName("active_tasks")]
     public uint ActiveTasks { get; set; }
+    [JsonPropertyName("completed_tasks")]
+    public ulong CompletedTasks { get; set; }
+    [JsonPropertyName("failed_tasks")]
+    public ulong FailedTasks { get; set; }
     [JsonPropertyName("cpu_utilization_percent")]
     public double CpuUtilizationPercent { get; set; }
     [JsonPropertyName("memory_available_gb")]
     public ulong MemoryAvailableGb { get; set; }
+    [JsonPropertyName("memory_available_known")]
+    public bool MemoryAvailableKnown { get; set; }
     [JsonPropertyName("memory_utilization_percent")]
     public double MemoryUtilizationPercent { get; set; }
 }

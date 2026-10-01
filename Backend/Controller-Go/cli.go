@@ -143,14 +143,14 @@ func cliWorkerStatsList() error {
 
 func printWorkerStats(stats workerStatsResponse) {
 	node := stats.Node
-	fmt.Printf("Worker %s state=%s capacity=%.2f telemetry_age=%dms CPU=%.1f%% active_tasks=%d throughput=%.2f units/s factor=%.2f\n", node.Info.ID, node.State, stats.SchedulerWeight, stats.TelemetryAgeMS, node.Telemetry.CPUUtilizationPercent, node.Telemetry.ActiveTasks, node.ObservedThroughput, node.PerformanceFactor)
+	fmt.Printf("Worker %s state=%s capacity=%.2f telemetry_age=%dms CPU=%.1f%% RAM=%.1f%% available_ram=%dGB active_tasks=%d completed=%d failed=%d throughput=%.2f units/s factor=%.2f\n", node.Info.ID, node.State, stats.SchedulerWeight, stats.TelemetryAgeMS, node.Telemetry.CPUUtilizationPercent, node.Telemetry.MemoryUtilizationPercent, node.Telemetry.MemoryAvailableGB, node.Telemetry.ActiveTasks, node.Telemetry.CompletedTasks, node.Telemetry.FailedTasks, node.ObservedThroughput, node.PerformanceFactor)
 	if len(stats.CurrentPartitions) > 0 {
 		fmt.Printf("  partitions=%s\n", strings.Join(stats.CurrentPartitions, ", "))
 	}
 }
 
 func printWorker(node NodeRecord) {
-	fmt.Printf("Worker Information: %s\nID           %s\nState        %s\nHostname     %s\nOS           %s\nArchitecture %s\nCPU model    %s\nCPU          %d / %d allocated\nRAM          %d / %d GB allocated\nAssigned     %s\nGPU          %s\nHeartbeat    %s\nConnected    %s\n", node.Info.ID, node.Info.ID, node.State, node.Info.Hostname, node.Info.OS, node.Info.Arch, node.Info.CPUModel, node.AllocatedCPUCores, node.Info.CPUCores, node.AllocatedRAMGB, node.Info.RAMGB, assignedJobs(node.AssignedJobs), gpuDescription(node.Info.GPU), node.LastHeartbeat, node.ConnectedAt)
+	fmt.Printf("Worker Information: %s\nID           %s\nState        %s\nHostname     %s\nOS           %s\nArchitecture %s\nCPU model    %s\nCPU capacity %d cores (%d allocated, %d available)\nRAM capacity %d GB (%d allocated, %d available)\nCPU usage    %.1f%%\nRAM usage    %.1f%% (%d GB available)\nTasks        %d active, %d completed, %d failed\nAssigned     %s\nGPU          %s\nHeartbeat    %s\nConnected    %s\n", node.Info.ID, node.Info.ID, node.State, node.Info.Hostname, node.Info.OS, node.Info.Arch, node.Info.CPUModel, node.Info.CPUCores, node.AllocatedCPUCores, node.AvailableCPUCores, node.Info.RAMGB, node.AllocatedRAMGB, node.AvailableRAMGB, node.Telemetry.CPUUtilizationPercent, node.Telemetry.MemoryUtilizationPercent, node.Telemetry.MemoryAvailableGB, node.Telemetry.ActiveTasks, node.Telemetry.CompletedTasks, node.Telemetry.FailedTasks, assignedJobs(node.AssignedJobs), gpuDescription(node.Info.GPU), node.LastHeartbeat, node.ConnectedAt)
 }
 
 func cliJobsCommand(args []string) error {
@@ -466,15 +466,29 @@ func cliStatus() error {
 	for _, job := range jobs {
 		counts[job.Status]++
 	}
+	cluster, clusterErr := api.clusterStatus()
 	fmt.Println("Nodren Status")
 	fmt.Println("-------------")
 	fmt.Printf("Controller     ONLINE (%s)\n", api.baseURL)
-	fmt.Printf("Workers        %d\n", health.Nodes)
-	fmt.Printf("Ready          %d\n", ready)
-	fmt.Printf("Running Jobs   %d\n", counts[JobRunning])
-	fmt.Printf("Queued Jobs    %d\n", counts[JobQueued])
-	fmt.Printf("Completed      %d\n", counts[JobCompleted])
-	fmt.Printf("Failed         %d\n", counts[JobFailed])
+	if clusterErr == nil {
+		fmt.Printf("Uptime         %ds\n", cluster.UptimeSeconds)
+		fmt.Printf("Workers        %d total, %d online, %d stale, %d offline\n", cluster.Workers, cluster.OnlineWorkers, cluster.StaleWorkers, cluster.OfflineWorkers)
+		fmt.Printf("CPU usage      %.1f%%\n", cluster.CPUUtilizationPercent)
+		fmt.Printf("RAM usage      %.1f%% (%d GB dynamic available)\n", cluster.MemoryUtilizationPercent, cluster.MemoryAvailableGB)
+		fmt.Printf("Active tasks   %d\n", cluster.ActiveTasks)
+		fmt.Printf("Running Jobs   %d\n", cluster.ActiveJobs)
+		fmt.Printf("Queued Jobs    %d\n", cluster.QueuedJobs)
+		fmt.Printf("Completed      %d jobs / %d tasks\n", cluster.CompletedJobs, cluster.TotalCompletedTasks)
+		fmt.Printf("Failed         %d jobs / %d tasks\n", cluster.FailedJobs, cluster.TotalFailedTasks)
+	} else {
+		// Keep status useful when talking to a pre-observability Controller.
+		fmt.Printf("Workers        %d\n", health.Nodes)
+		fmt.Printf("Ready          %d\n", ready)
+		fmt.Printf("Running Jobs   %d\n", counts[JobRunning])
+		fmt.Printf("Queued Jobs    %d\n", counts[JobQueued])
+		fmt.Printf("Completed      %d\n", counts[JobCompleted])
+		fmt.Printf("Failed         %d\n", counts[JobFailed])
+	}
 	return nil
 }
 

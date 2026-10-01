@@ -786,3 +786,38 @@ pub fn encode_heartbeat(
     );
     out
 }
+
+pub fn encode_heartbeat_with_counters(
+    unix_ms: i64,
+    uptime_seconds: u64,
+    active_tasks: u32,
+    completed_tasks: u64,
+    failed_tasks: u64,
+    cpu_percent: Option<f64>,
+    memory_available_gb: Option<u64>,
+) -> Vec<u8> {
+    let mut out = encode_heartbeat(
+        unix_ms,
+        uptime_seconds,
+        active_tasks,
+        cpu_percent,
+        memory_available_gb,
+    );
+    out.extend_from_slice(&completed_tasks.to_le_bytes());
+    out.extend_from_slice(&failed_tasks.to_le_bytes());
+    out
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::{encode_heartbeat, encode_heartbeat_with_counters};
+
+    #[test]
+    fn heartbeat_payloads_remain_backward_conscious() {
+        assert_eq!(encode_heartbeat(1, 2, 3, Some(4.5), Some(6)).len(), 32);
+        let payload = encode_heartbeat_with_counters(1, 2, 3, 11, 7, Some(4.5), Some(6));
+        assert_eq!(payload.len(), 48);
+        assert_eq!(u64::from_le_bytes(payload[32..40].try_into().unwrap()), 11);
+        assert_eq!(u64::from_le_bytes(payload[40..48].try_into().unwrap()), 7);
+    }
+}

@@ -15,6 +15,15 @@ func TestHeartbeatTelemetryRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected measurements: %#v", telemetry)
 	}
 
+	extended := encodeHeartbeatTelemetryWithCounters(1234, 42, 3, 11, 2, 37.5, 8)
+	_, measured, err := decodeHeartbeat(extended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measured.CompletedTasks != 11 || measured.FailedTasks != 2 || !measured.MemoryAvailableKnown {
+		t.Fatalf("unexpected extended telemetry: %#v", measured)
+	}
+
 	_, legacy, err := decodeHeartbeat(encodeHeartbeat(1234))
 	if err != nil {
 		t.Fatal(err)

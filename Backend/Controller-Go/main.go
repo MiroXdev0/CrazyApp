@@ -274,6 +274,39 @@ type jobStatsResponse struct {
 	SchedulerReasons []string `json:"scheduler_reasons,omitempty"`
 }
 
+// clusterStatusResponse separates advertised capacity (total/available
+// cores and RAM) from measurements reported by workers. A negative dynamic
+// percentage means no connected worker has supplied that measurement yet.
+type clusterStatusResponse struct {
+	Status                   string    `json:"status"`
+	Service                  string    `json:"service"`
+	Version                  string    `json:"version"`
+	StartedAt                time.Time `json:"started_at"`
+	UptimeSeconds            uint64    `json:"uptime_seconds"`
+	Workers                  int       `json:"workers"`
+	OnlineWorkers            int       `json:"online_workers"`
+	OfflineWorkers           int       `json:"offline_workers"`
+	StaleWorkers             int       `json:"stale_workers"`
+	PausedWorkers            int       `json:"paused_workers"`
+	ActiveJobs               int       `json:"active_jobs"`
+	QueuedJobs               int       `json:"queued_jobs"`
+	CompletedJobs            int       `json:"completed_jobs"`
+	FailedJobs               int       `json:"failed_jobs"`
+	ActiveTasks              uint64    `json:"active_tasks"`
+	TotalCompletedTasks      uint64    `json:"total_completed_tasks"`
+	TotalFailedTasks         uint64    `json:"total_failed_tasks"`
+	TotalCPUCores            uint64    `json:"total_cpu_cores"`
+	AvailableCPUCores        uint64    `json:"available_cpu_cores"`
+	TotalRAMGB               uint64    `json:"total_ram_gb"`
+	AvailableRAMGB           uint64    `json:"available_ram_gb"`
+	MemoryAvailableGB        uint64    `json:"memory_available_gb"`
+	CPUUtilizationPercent    float64   `json:"cpu_utilization_percent"`
+	MemoryUtilizationPercent float64   `json:"memory_utilization_percent"`
+	TelemetryWorkers         int       `json:"telemetry_workers"`
+	MemoryTelemetryWorkers   int       `json:"memory_telemetry_workers"`
+	ThroughputUnitsPerSecond float64   `json:"throughput_units_per_second"`
+}
+
 type session struct {
 	conn     net.Conn
 	send     chan []byte
@@ -380,8 +413,9 @@ type Controller struct {
 	lastTelemetryEvent map[string]time.Time
 	statePath          string
 
-	tcpAddr  string
-	httpAddr string
+	tcpAddr   string
+	httpAddr  string
+	startedAt time.Time
 }
 
 func NewController(tcpAddr, httpAddr string) *Controller {
@@ -400,6 +434,7 @@ func NewController(tcpAddr, httpAddr string) *Controller {
 		lastTelemetryEvent: make(map[string]time.Time),
 		tcpAddr:            tcpAddr,
 		httpAddr:           httpAddr,
+		startedAt:          time.Now().UTC(),
 	}
 }
 
@@ -561,6 +596,15 @@ func (c *Controller) handleSession(s *session) {
 				Info: info, State: NodeOffline,
 				LastHeartbeat: now, ConnectedAt: now,
 			}
+			if previousNode := c.nodes[info.ID]; previousNode != nil {
+				// A reconnect is the same logical worker. Preserve controller-side
+				// history while replacing static registration data and the session.
+				node.CompletedTasks = previousNode.CompletedTasks
+				node.FailedTasks = previousNode.FailedTasks
+				node.TotalExecutionUS = previousNode.TotalExecutionUS
+				node.ObservedThroughput = previousNode.ObservedThroughput
+				node.PerformanceFactor = previousNode.PerformanceFactor
+			}
 			node.Telemetry = WorkerTelemetry{Timestamp: now.UTC(), CPUUtilizationPercent: -1, MemoryUtilizationPercent: -1}
 			updateNodeCapacity(node)
 			c.nodes[info.ID] = node
@@ -585,7 +629,7 @@ func (c *Controller) handleSession(s *session) {
 				if n := c.nodes[s.nodeID]; n != nil {
 					n.LastHeartbeat = time.Now()
 					telemetry.Timestamp = n.LastHeartbeat.UTC()
-					if telemetry.MemoryAvailableGB > 0 && n.Info.RAMGB > 0 {
+					if telemetry.MemoryAvailableKnown && n.Info.RAMGB > 0 {
 						telemetry.MemoryUtilizationPercent = math.Max(0, math.Min(100, (1-float64(telemetry.MemoryAvailableGB)/float64(n.Info.RAMGB))*100))
 					}
 					n.Telemetry = telemetry
@@ -2175,30 +2219,45 @@ func (c *Controller) healthLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			now := time.Now()
-			var stale []*session
-			c.mu.Lock()
-			for nodeID, n := range c.nodes {
-				if now.Sub(n.LastHeartbeat) > 15*time.Second {
-					if n.State != NodeLost {
-						log.Printf("worker marked offline id=%s reason=heartbeat timeout", nodeID)
-					}
-					n.State = NodeLost
-					if s := c.sessions[nodeID]; s != nil {
-						delete(c.sessions, nodeID)
-						c.requeueNodeJobsLocked(nodeID)
-						stale = append(stale, s)
-					}
-				}
-			}
-			c.mu.Unlock()
-			for _, s := range stale {
-				s.close()
-			}
+			c.markStaleWorkers(time.Now())
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func (c *Controller) markStaleWorkers(now time.Time) []string {
+	var stale []*session
+	var lostIDs []string
+	c.mu.Lock()
+	for nodeID, n := range c.nodes {
+		if now.Sub(n.LastHeartbeat) > 15*time.Second {
+			if n.State != NodeLost {
+				log.Printf("worker marked offline id=%s reason=heartbeat timeout", nodeID)
+				lostIDs = append(lostIDs, nodeID)
+			}
+			n.State = NodeLost
+			if s := c.sessions[nodeID]; s != nil {
+				delete(c.sessions, nodeID)
+				c.requeueNodeJobsLocked(nodeID)
+				stale = append(stale, s)
+			}
+		}
+	}
+	if len(lostIDs) > 0 {
+		c.persistLocked()
+	}
+	c.mu.Unlock()
+	for _, s := range stale {
+		s.close()
+	}
+	for _, nodeID := range lostIDs {
+		c.publishEvent(controllerEvent{Type: "worker.stale", Resource: "worker", ID: nodeID, Status: string(NodeLost)})
+	}
+	if len(lostIDs) > 0 {
+		c.triggerSchedule()
+	}
+	return lostIDs
 }
 
 func (c *Controller) createJob(req jobRequest) (*Job, error) {
@@ -2253,10 +2312,12 @@ func (c *Controller) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", c.handleHealth)
 	mux.HandleFunc("/v1/controller/info", c.handleControllerInfo)
+	mux.HandleFunc("/v1/cluster/status", c.handleClusterStatus)
 	mux.HandleFunc("/v1/events", c.handleEvents)
 	mux.HandleFunc("/v1/nodes", c.handleNodes)
 	mux.HandleFunc("/v1/nodes/", c.handleNode)
 	mux.HandleFunc("/v1/jobs", c.handleJobs)
+	mux.HandleFunc("/v1/jobs/active", c.handleActiveJobs)
 	mux.HandleFunc("/v1/jobs/", c.handleJob)
 	mux.HandleFunc("/v1/tasks", c.handleTasks)
 	mux.HandleFunc("/v1/tasks/batch", c.handleTasks)
@@ -2424,20 +2485,45 @@ func (c *Controller) handleControllerInfo(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service":   "nodren-controller",
-		"version":   nodrenVersion,
-		"tcp_addr":  c.tcpAddr,
-		"http_addr": c.httpAddr,
-		"workers":   c.nodeCount(),
+		"service":    "nodren-controller",
+		"version":    nodrenVersion,
+		"tcp_addr":   c.tcpAddr,
+		"http_addr":  c.httpAddr,
+		"workers":    c.nodeCount(),
+		"started_at": c.startedAt,
 	})
 }
 
+func (c *Controller) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	now := time.Now()
+	c.mu.RLock()
+	status := c.clusterStatusLocked(now)
+	c.mu.RUnlock()
+	writeJSON(w, http.StatusOK, status)
+}
+
 func (c *Controller) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	now := time.Now()
+	c.mu.RLock()
+	status := c.clusterStatusLocked(now)
+	c.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"service": "nodren-controller",
-		"version": nodrenVersion,
-		"nodes":   c.nodeCount(),
+		"status":          "ok",
+		"service":         status.Service,
+		"version":         status.Version,
+		"nodes":           status.Workers,
+		"online_workers":  status.OnlineWorkers,
+		"offline_workers": status.OfflineWorkers,
+		"stale_workers":   status.StaleWorkers,
+		"uptime_seconds":  status.UptimeSeconds,
 	})
 }
 
@@ -2572,6 +2658,23 @@ func (c *Controller) handleJobs(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (c *Controller) handleActiveJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	c.mu.RLock()
+	jobs := make([]Job, 0)
+	for _, job := range c.jobs {
+		if !isTerminalJob(job.Status) {
+			jobs = append(jobs, cloneJob(*job))
+		}
+	}
+	c.mu.RUnlock()
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].UpdatedAt.Before(jobs[j].UpdatedAt) })
+	writeJSON(w, http.StatusOK, jobs)
 }
 
 func (c *Controller) handleJob(w http.ResponseWriter, r *http.Request) {
@@ -2782,6 +2885,96 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func (c *Controller) clusterStatusLocked(now time.Time) clusterStatusResponse {
+	response := clusterStatusResponse{
+		Status:                   "ok",
+		Service:                  "nodren-controller",
+		Version:                  nodrenVersion,
+		StartedAt:                c.startedAt,
+		CPUUtilizationPercent:    -1,
+		MemoryUtilizationPercent: -1,
+	}
+	if response.StartedAt.IsZero() {
+		response.StartedAt = now.UTC()
+	}
+	if now.After(response.StartedAt) {
+		response.UptimeSeconds = uint64(now.Sub(response.StartedAt).Seconds())
+	}
+
+	var cpuSum, memorySum float64
+	var cpuSamples, memorySamples int
+	for nodeID, node := range c.nodes {
+		response.Workers++
+		response.TotalCPUCores += uint64(node.Info.CPUCores)
+		response.AvailableCPUCores += uint64(node.AvailableCPUCores)
+		response.TotalRAMGB += node.Info.RAMGB
+		response.AvailableRAMGB += node.AvailableRAMGB
+		response.TotalCompletedTasks += node.CompletedTasks
+		response.TotalFailedTasks += node.FailedTasks
+		response.ThroughputUnitsPerSecond += node.ObservedThroughput
+		response.ActiveTasks += uint64(node.Telemetry.ActiveTasks)
+
+		switch node.State {
+		case NodeLost:
+			response.StaleWorkers++
+		case NodeOffline:
+			response.OfflineWorkers++
+		case NodePaused:
+			response.PausedWorkers++
+			response.OnlineWorkers++
+		case NodeReady, NodeBusy:
+			response.OnlineWorkers++
+		default:
+			if c.sessions[nodeID] != nil {
+				response.OnlineWorkers++
+			} else {
+				response.OfflineWorkers++
+			}
+		}
+
+		if node.Telemetry.CPUUtilizationPercent >= 0 {
+			cpuSum += node.Telemetry.CPUUtilizationPercent
+			cpuSamples++
+		}
+		if node.Telemetry.MemoryUtilizationPercent >= 0 {
+			memorySum += node.Telemetry.MemoryUtilizationPercent
+			memorySamples++
+		}
+		if node.Telemetry.MemoryAvailableKnown {
+			response.MemoryAvailableGB += node.Telemetry.MemoryAvailableGB
+			response.MemoryTelemetryWorkers++
+		}
+		if node.Telemetry.CPUUtilizationPercent >= 0 || node.Telemetry.MemoryAvailableKnown ||
+			node.Telemetry.UptimeSeconds > 0 || node.Telemetry.ActiveTasks > 0 ||
+			node.Telemetry.CompletedTasks > 0 || node.Telemetry.FailedTasks > 0 {
+			response.TelemetryWorkers++
+		}
+	}
+	if cpuSamples > 0 {
+		response.CPUUtilizationPercent = cpuSum / float64(cpuSamples)
+	}
+	if memorySamples > 0 {
+		response.MemoryUtilizationPercent = memorySum / float64(memorySamples)
+	}
+
+	for _, job := range c.jobs {
+		switch job.Status {
+		case JobRunning:
+			response.ActiveJobs++
+		case JobQueued, JobPaused:
+			response.QueuedJobs++
+		case JobCompleted:
+			response.CompletedJobs++
+		case JobFailed, JobTimedOut:
+			response.FailedJobs++
+		}
+	}
+	if response.StaleWorkers > 0 || response.OfflineWorkers > 0 {
+		response.Status = "degraded"
+	}
+	return response
 }
 
 func (c *Controller) nodeCount() int {
