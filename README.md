@@ -21,9 +21,6 @@ Nodren provides a Controller, worker runtime, scheduler, artifact system, execut
 >
 > If you encounter bugs or unexpected behavior, please report them through the project's issue tracker.
 
-> Status: pre-release / active development**
-> Windows x64 is currently the primary release platform. Linux x64 support exists but should be 
->  considered **beta / unstable**.
 
 ---
 
