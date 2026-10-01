@@ -856,7 +856,7 @@ Roadmap items marked as incomplete are planned or under development and should n
 
 ---
 
-# Built by MiroXdev
+# Built by MiroXdev0
 
 Nodren is an independent systems project exploring how distributed execution can be built across multiple machines while keeping control, execution, networking, and low-level computation as separate architectural layers.
 
