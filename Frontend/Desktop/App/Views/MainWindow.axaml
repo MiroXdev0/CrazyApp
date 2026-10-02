@@ -98,7 +98,7 @@
                                     <TextBlock FontWeight="SemiBold" Text="{Binding Info.Id}" />
                                     <TextBlock Foreground="#B5C2D2" Text="{Binding State}" />
                                     <TextBlock Foreground="#9AA7B8" Text="{Binding Info.Os} · {Binding Info.Arch}" />
-                                    <TextBlock Foreground="#9AA7B8" Text="CPU {Binding Info.CpuCores} · RAM {Binding Info.RamGb} GB" />
+                                    <TextBlock Foreground="#9AA7B8" Text="CPU capacity {Binding Info.CpuCores} · topology {Binding Info.PhysicalCpuCores}c/{Binding Info.LogicalCpuCores}t · RAM {Binding Info.RamGb} GB" />
                                     <TextBlock Foreground="#9AA7B8" Text="Load {Binding Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · active {Binding Telemetry.ActiveTasks}" />
                                 </StackPanel>
                             </DataTemplate>
@@ -112,6 +112,7 @@
                                 <TextBlock Foreground="#B5C2D2" Text="{Binding SelectedWorker.State}" />
                                 <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.Hostname}" />
                                 <TextBlock Foreground="#9AA7B8" Text="CPU model: {Binding SelectedWorker.Info.CpuModel}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="CPU topology (static): {Binding SelectedWorker.Info.PhysicalCpuCores} physical / {Binding SelectedWorker.Info.LogicalCpuCores} logical · scheduler capacity: {Binding SelectedWorker.Info.CpuCores}" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="4">
                                     <TextBlock Foreground="#9AA7B8" Text="CPU allocated: " />
                                     <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AllocatedCpuCores}" />
@@ -127,9 +128,10 @@
                                 </StackPanel>
                                 <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AssignedJobs.Count}" />
                                 <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.LastHeartbeat}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="Telemetry CPU: {Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · RAM available: {Binding SelectedWorker.Telemetry.MemoryAvailableGb} GB" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="Telemetry CPU: {Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · RAM available: {Binding SelectedWorker.Telemetry.MemoryAvailableGb} GB · GPU: {Binding SelectedWorker.Telemetry.GpuUtilizationPercent, StringFormat={}{0:0.#}%}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="GPU available VRAM: {Binding SelectedWorker.Telemetry.GpuAvailableVramGb} GB (measured={Binding SelectedWorker.Telemetry.GpuAvailableVramKnown})" TextWrapping="Wrap" />
                                 <TextBlock Foreground="#9AA7B8" Text="Tasks active: {Binding SelectedWorker.Telemetry.ActiveTasks} · completed: {Binding SelectedWorker.Telemetry.CompletedTasks} · failed: {Binding SelectedWorker.Telemetry.FailedTasks}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="GPU (static): {Binding SelectedWorker.Info.Gpu.Vendor} {Binding SelectedWorker.Info.Gpu.Model} · {Binding SelectedWorker.Info.Gpu.VramGb} GB" TextWrapping="Wrap" />
+                                <TextBlock Foreground="#9AA7B8" Text="GPU (static): {Binding SelectedWorker.Info.Gpu.Vendor} {Binding SelectedWorker.Info.Gpu.Model} · {Binding SelectedWorker.Info.Gpu.VramGb} GB · compute {Binding SelectedWorker.Info.Gpu.ComputeCapability}" TextWrapping="Wrap" />
                                 <TextBlock Foreground="#9AA7B8" Text="Scheduler capacity: {Binding SelectedWorker.EffectiveCapacity, StringFormat={}{0:0.##}} · performance factor: {Binding SelectedWorker.PerformanceFactor, StringFormat={}{0:0.##}}" TextWrapping="Wrap" />
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <Button Command="{Binding PingWorkerCommand}" Content="Ping" />

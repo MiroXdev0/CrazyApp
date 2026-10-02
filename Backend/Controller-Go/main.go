@@ -251,12 +251,15 @@ type distributionRequest struct {
 }
 
 type controllerEvent struct {
-	Type     string    `json:"type"`
-	Resource string    `json:"resource,omitempty"`
-	ID       string    `json:"id,omitempty"`
-	Status   string    `json:"status,omitempty"`
-	Progress float64   `json:"progress,omitempty"`
-	Time     time.Time `json:"time"`
+	Type      string    `json:"type"`
+	Resource  string    `json:"resource,omitempty"`
+	ID        string    `json:"id,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Progress  float64   `json:"progress,omitempty"`
+	Stream    string    `json:"stream,omitempty"`
+	OutputB64 string    `json:"output_base64,omitempty"`
+	Final     bool      `json:"final,omitempty"`
+	Time      time.Time `json:"time"`
 }
 
 type workerStatsResponse struct {
@@ -299,11 +302,16 @@ type clusterStatusResponse struct {
 	AvailableCPUCores        uint64    `json:"available_cpu_cores"`
 	TotalRAMGB               uint64    `json:"total_ram_gb"`
 	AvailableRAMGB           uint64    `json:"available_ram_gb"`
+	TotalGPUs                uint64    `json:"total_gpus"`
+	TotalVRAMGB              uint64    `json:"total_vram_gb"`
+	AvailableVRAMGB          uint64    `json:"available_vram_gb"`
 	MemoryAvailableGB        uint64    `json:"memory_available_gb"`
 	CPUUtilizationPercent    float64   `json:"cpu_utilization_percent"`
 	MemoryUtilizationPercent float64   `json:"memory_utilization_percent"`
+	GPUUtilizationPercent    float64   `json:"gpu_utilization_percent"`
 	TelemetryWorkers         int       `json:"telemetry_workers"`
 	MemoryTelemetryWorkers   int       `json:"memory_telemetry_workers"`
+	GPUTelemetryWorkers      int       `json:"gpu_telemetry_workers"`
 	ThroughputUnitsPerSecond float64   `json:"throughput_units_per_second"`
 }
 
@@ -313,6 +321,14 @@ type session struct {
 	done     chan struct{}
 	closeOne sync.Once
 	nodeID   string
+}
+
+type workerArtifactUpload struct {
+	taskID   uint64
+	nodeID   string
+	spec     TaskArtifact
+	path     string
+	nextSize uint64
 }
 
 func newSession(conn net.Conn) *session {
@@ -405,6 +421,8 @@ type Controller struct {
 	artifactDir     string
 	aiPlans         map[string]*AIExecutionPlan
 	aiExecutions    map[string]*AIExecution
+	workerArtifacts map[uint64]*workerArtifactUpload
+	taskArtifacts   map[uint64][]TaskArtifact
 
 	scheduleNotify     chan struct{}
 	eventMu            sync.RWMutex
@@ -429,6 +447,8 @@ func NewController(tcpAddr, httpAddr string) *Controller {
 		artifacts:          make(map[string]*ArtifactRecord),
 		aiPlans:            make(map[string]*AIExecutionPlan),
 		aiExecutions:       make(map[string]*AIExecution),
+		workerArtifacts:    make(map[uint64]*workerArtifactUpload),
+		taskArtifacts:      make(map[uint64][]TaskArtifact),
 		scheduleNotify:     make(chan struct{}, 1),
 		eventSubscribers:   make(map[uint64]chan controllerEvent),
 		lastTelemetryEvent: make(map[string]time.Time),
@@ -605,7 +625,7 @@ func (c *Controller) handleSession(s *session) {
 				node.ObservedThroughput = previousNode.ObservedThroughput
 				node.PerformanceFactor = previousNode.PerformanceFactor
 			}
-			node.Telemetry = WorkerTelemetry{Timestamp: now.UTC(), CPUUtilizationPercent: -1, MemoryUtilizationPercent: -1}
+			node.Telemetry = WorkerTelemetry{Timestamp: now.UTC(), CPUUtilizationPercent: -1, MemoryUtilizationPercent: -1, GPUUtilizationPercent: -1}
 			updateNodeCapacity(node)
 			c.nodes[info.ID] = node
 			c.persistLocked()
@@ -681,6 +701,29 @@ func (c *Controller) handleSession(s *session) {
 			}
 			c.applyGeneralTaskResult(result)
 
+		case MsgTaskState:
+			output, err := decodeTaskOutput(f.Payload)
+			if err != nil {
+				_ = s.enqueue(MsgError, f.RequestID, encodeError(err.Error()))
+				return
+			}
+			c.applyTaskOutput(s.nodeID, output)
+
+		case MsgArtifactBegin:
+			if err := c.beginWorkerArtifact(s.nodeID, f.Payload); err != nil {
+				_ = s.enqueue(MsgError, f.RequestID, encodeError(err.Error()))
+			}
+
+		case MsgArtifactChunk:
+			if err := c.appendWorkerArtifact(s.nodeID, f.Payload); err != nil {
+				_ = s.enqueue(MsgError, f.RequestID, encodeError(err.Error()))
+			}
+
+		case MsgArtifactEnd:
+			if err := c.finishWorkerArtifact(s.nodeID, f.Payload); err != nil {
+				_ = s.enqueue(MsgError, f.RequestID, encodeError(err.Error()))
+			}
+
 		case MsgGoodbye:
 			c.handleDisconnect(s)
 			return
@@ -721,6 +764,12 @@ func (c *Controller) handleDisconnect(s *session) {
 	delete(c.sessions, s.nodeID)
 	if node := c.nodes[s.nodeID]; node != nil {
 		node.State = NodeLost
+	}
+	for taskID, upload := range c.workerArtifacts {
+		if upload.nodeID == s.nodeID {
+			_ = os.Remove(upload.path)
+			delete(c.workerArtifacts, taskID)
+		}
 	}
 	c.requeueNodeJobsLocked(s.nodeID)
 	c.persistLocked()
@@ -978,9 +1027,36 @@ func (c *Controller) canFit(node *NodeRecord, req ResourceRequirements) bool {
 	if gpu > availableGPU || node.AllocatedGPUCount > availableGPU-gpu {
 		return false
 	}
+	if requiredRAMGB(req) > schedulableRAMGB(node) || req.VRAMGB > schedulableVRAMGB(node) {
+		return false
+	}
 	return node.AllocatedCPUCores <= node.Info.CPUCores-cpu &&
 		node.AllocatedRAMGB <= node.Info.RAMGB-ram &&
 		node.AllocatedVRAMGB <= node.Info.GPU.VRAMGB-req.VRAMGB
+}
+
+// schedulableRAMGB and schedulableVRAMGB combine static capacity with live
+// measurements. A missing measurement never becomes a fabricated zero.
+func schedulableRAMGB(node *NodeRecord) uint64 {
+	if node == nil {
+		return 0
+	}
+	available := node.Info.RAMGB - minUint64(node.AllocatedRAMGB, node.Info.RAMGB)
+	if node.Telemetry.MemoryAvailableKnown && node.Telemetry.MemoryAvailableGB < available {
+		available = node.Telemetry.MemoryAvailableGB
+	}
+	return available
+}
+
+func schedulableVRAMGB(node *NodeRecord) uint64 {
+	if node == nil {
+		return 0
+	}
+	available := node.Info.GPU.VRAMGB - minUint64(node.AllocatedVRAMGB, node.Info.GPU.VRAMGB)
+	if node.Telemetry.GPUAvailableVRAMKnown && node.Telemetry.GPUAvailableVRAMGB < available {
+		available = node.Telemetry.GPUAvailableVRAMGB
+	}
+	return available
 }
 
 func containsFold(values []string, target string) bool {
@@ -1031,8 +1107,8 @@ func (c *Controller) canFitJob(node *NodeRecord, job *Job) bool {
 
 // capacityScore is a deterministic scheduling estimate, not a benchmark.
 // CPU contributes one unit per advertised core and memory contributes one
-// unit per four GiB. GPU metadata is intentionally not added until native GPU
-// execution exists; it remains a requirement filter rather than fake speed.
+// unit per four GiB. GPU measurements influence eligibility and effective
+// capacity, but are not converted into a fabricated performance score.
 func capacityScore(info NodeInfo) float64 {
 	cpu := info.CPUCores
 	if cpu == 0 {
@@ -1064,6 +1140,9 @@ func effectiveCapacity(node *NodeRecord) float64 {
 	}
 	if node.Telemetry.MemoryUtilizationPercent >= 0 {
 		telemetryFraction = math.Min(telemetryFraction, math.Max(0.05, (100-node.Telemetry.MemoryUtilizationPercent)/100))
+	}
+	if node.Telemetry.GPUUtilizationKnown && node.Telemetry.GPUUtilizationPercent >= 0 {
+		telemetryFraction = math.Min(telemetryFraction, math.Max(0.05, (100-node.Telemetry.GPUUtilizationPercent)/100))
 	}
 	performance := node.PerformanceFactor
 	if performance <= 0 {
@@ -1154,6 +1233,8 @@ func (c *Controller) chooseNodeLocked(req ResourceRequirements) string {
 	var bestID string
 	var bestCPUSlack uint32
 	var bestRAMSlack uint64
+	var bestVRAMSlack uint64
+	requiresGPU := requiredGPUCount(req) > 0
 
 	for id, node := range c.nodes {
 		s := c.sessions[id]
@@ -1166,14 +1247,20 @@ func (c *Controller) chooseNodeLocked(req ResourceRequirements) string {
 
 		cpuSlack := node.Info.CPUCores - node.AllocatedCPUCores - requiredCPUCores(req)
 		ramSlack := node.Info.RAMGB - node.AllocatedRAMGB - requiredRAMGB(req)
+		vramSlack := schedulableVRAMGB(node) - req.VRAMGB
 		// Best-fit placement keeps larger workers available for larger jobs.
 		// Node ID is the final tie-breaker so map iteration order cannot affect
 		// placement.
-		if bestID == "" || cpuSlack < bestCPUSlack ||
+		betterGPUFit := requiresGPU && (bestID == "" || vramSlack < bestVRAMSlack)
+		betterGeneralFit := !requiresGPU && (bestID == "" || cpuSlack < bestCPUSlack ||
 			(cpuSlack == bestCPUSlack && (ramSlack < bestRAMSlack ||
-				(ramSlack == bestRAMSlack && id < bestID))) {
+				(ramSlack == bestRAMSlack && id < bestID))))
+		tieBreak := requiresGPU && bestID != "" && vramSlack == bestVRAMSlack &&
+			(cpuSlack < bestCPUSlack || (cpuSlack == bestCPUSlack && id < bestID))
+		if betterGPUFit || betterGeneralFit || tieBreak {
 			bestCPUSlack = cpuSlack
 			bestRAMSlack = ramSlack
+			bestVRAMSlack = vramSlack
 			bestID = id
 		}
 	}
@@ -2178,6 +2265,7 @@ func (c *Controller) applyGeneralTaskResult(result GeneralTaskResultEnvelope) {
 		StderrB64:       base64.StdEncoding.EncodeToString(result.Stderr),
 		StdoutTruncated: result.StdoutTruncated, StderrTruncated: result.StderrTruncated,
 		DurationUS: result.DurationUS, ErrorCode: result.ErrorCode, Error: result.Error, Attempt: result.Attempt,
+		OutputArtifacts: append([]TaskArtifact(nil), c.taskArtifacts[result.TaskID]...),
 	}
 	if result.Status == "COMPLETED" {
 		_ = transitionPartition(partition, PartitionCompleted)
@@ -2202,6 +2290,33 @@ func (c *Controller) applyGeneralTaskResult(result GeneralTaskResultEnvelope) {
 	c.publishEvent(controllerEvent{Type: "task.completed", Resource: "task", ID: job.ID, Status: string(job.Status), Progress: job.Distribution.ProgressPercent})
 	c.persistLocked()
 	c.triggerSchedule()
+}
+
+func (c *Controller) applyTaskOutput(nodeID string, output TaskOutputChunk) {
+	if len(output.Data) == 0 && !output.Final {
+		return
+	}
+	c.mu.RLock()
+	jobID := c.taskToJob[output.TaskID]
+	job := c.jobs[jobID]
+	valid := job != nil && c.taskToNode[output.TaskID] == nodeID
+	status := ""
+	if valid {
+		status = string(job.Status)
+	}
+	c.mu.RUnlock()
+	if !valid {
+		return
+	}
+	c.publishEvent(controllerEvent{
+		Type:      "task.output",
+		Resource:  "task",
+		ID:        jobID,
+		Status:    status,
+		Stream:    output.Stream,
+		OutputB64: base64.StdEncoding.EncodeToString(output.Data),
+		Final:     output.Final,
+	})
 }
 
 func (c *Controller) setJobFailed(id, errorCode, reason string) {
@@ -2327,6 +2442,7 @@ func (c *Controller) routes() http.Handler {
 	mux.HandleFunc("/v1/ai/executions", c.handleAIExecutions)
 	mux.HandleFunc("/v1/ai/executions/", c.handleAIExecution)
 	mux.HandleFunc("/v1/ai/workers", c.handleAIWorkers)
+	mux.HandleFunc("/v1/ai/inspect", c.handleAIInspect)
 	mux.HandleFunc("/v1/artifacts", c.handleArtifacts)
 	mux.HandleFunc("/v1/artifacts/", c.handleArtifact)
 	return mux
@@ -2903,14 +3019,17 @@ func (c *Controller) clusterStatusLocked(now time.Time) clusterStatusResponse {
 		response.UptimeSeconds = uint64(now.Sub(response.StartedAt).Seconds())
 	}
 
-	var cpuSum, memorySum float64
-	var cpuSamples, memorySamples int
+	var cpuSum, memorySum, gpuSum float64
+	var cpuSamples, memorySamples, gpuSamples int
 	for nodeID, node := range c.nodes {
 		response.Workers++
 		response.TotalCPUCores += uint64(node.Info.CPUCores)
 		response.AvailableCPUCores += uint64(node.AvailableCPUCores)
 		response.TotalRAMGB += node.Info.RAMGB
 		response.AvailableRAMGB += node.AvailableRAMGB
+		response.TotalGPUs += uint64(availableGPUCount(node.Info))
+		response.TotalVRAMGB += node.Info.GPU.VRAMGB
+		response.AvailableVRAMGB += schedulableVRAMGB(node)
 		response.TotalCompletedTasks += node.CompletedTasks
 		response.TotalFailedTasks += node.FailedTasks
 		response.ThroughputUnitsPerSecond += node.ObservedThroughput
@@ -2942,14 +3061,22 @@ func (c *Controller) clusterStatusLocked(now time.Time) clusterStatusResponse {
 			memorySum += node.Telemetry.MemoryUtilizationPercent
 			memorySamples++
 		}
+		if node.Telemetry.GPUUtilizationKnown && node.Telemetry.GPUUtilizationPercent >= 0 {
+			gpuSum += node.Telemetry.GPUUtilizationPercent
+			gpuSamples++
+		}
 		if node.Telemetry.MemoryAvailableKnown {
 			response.MemoryAvailableGB += node.Telemetry.MemoryAvailableGB
 			response.MemoryTelemetryWorkers++
 		}
 		if node.Telemetry.CPUUtilizationPercent >= 0 || node.Telemetry.MemoryAvailableKnown ||
 			node.Telemetry.UptimeSeconds > 0 || node.Telemetry.ActiveTasks > 0 ||
-			node.Telemetry.CompletedTasks > 0 || node.Telemetry.FailedTasks > 0 {
+			node.Telemetry.CompletedTasks > 0 || node.Telemetry.FailedTasks > 0 || node.Telemetry.GPUAvailableVRAMKnown ||
+			node.Telemetry.GPUUtilizationKnown && node.Telemetry.GPUUtilizationPercent >= 0 {
 			response.TelemetryWorkers++
+		}
+		if node.Telemetry.GPUAvailableVRAMKnown || (node.Telemetry.GPUUtilizationKnown && node.Telemetry.GPUUtilizationPercent >= 0) {
+			response.GPUTelemetryWorkers++
 		}
 	}
 	if cpuSamples > 0 {
@@ -2957,6 +3084,11 @@ func (c *Controller) clusterStatusLocked(now time.Time) clusterStatusResponse {
 	}
 	if memorySamples > 0 {
 		response.MemoryUtilizationPercent = memorySum / float64(memorySamples)
+	}
+	if gpuSamples > 0 {
+		response.GPUUtilizationPercent = gpuSum / float64(gpuSamples)
+	} else {
+		response.GPUUtilizationPercent = -1
 	}
 
 	for _, job := range c.jobs {

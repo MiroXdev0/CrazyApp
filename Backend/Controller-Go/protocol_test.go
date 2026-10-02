@@ -80,7 +80,7 @@ func TestTaskResultDecodesMachineReadableErrorCode(t *testing.T) {
 func TestRegisterRoundTrip(t *testing.T) {
 	in := NodeInfo{
 		ID: "node-1", Hostname: "host", OS: "Linux", Arch: "x86_64",
-		CPUCores: 8, RAMGB: 32,
+		CPUCores: 8, LogicalCPUCores: 8, PhysicalCPUCores: 4, RAMGB: 32,
 		GPU: GPUInfo{Vendor: "NVIDIA", Model: "RTX", VRAMGB: 12},
 	}
 	payload, err := encodeRegister(in)
@@ -91,7 +91,7 @@ func TestRegisterRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.ID != in.ID || out.CPUCores != in.CPUCores || out.GPU.Model != in.GPU.Model {
+	if out.ID != in.ID || out.CPUCores != in.CPUCores || out.LogicalCPUCores != in.LogicalCPUCores || out.PhysicalCPUCores != in.PhysicalCPUCores || out.GPU.Model != in.GPU.Model {
 		t.Fatalf("register mismatch: %#v %#v", in, out)
 	}
 }
@@ -101,6 +101,17 @@ func TestHeartbeatRejectsTrailingData(t *testing.T) {
 	payload = append(payload, 0)
 	if _, _, err := decodeHeartbeat(payload); err == nil {
 		t.Fatal("heartbeat decoder accepted trailing bytes")
+	}
+}
+
+func TestHeartbeatCarriesOptionalGPUTelemetry(t *testing.T) {
+	payload := encodeHeartbeatTelemetryWithCountersAndGPU(1, 2, 3, 11, 7, 12.5, 6, 10, 42.5)
+	_, telemetry, err := decodeHeartbeat(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !telemetry.GPUAvailableVRAMKnown || telemetry.GPUAvailableVRAMGB != 10 || telemetry.GPUUtilizationPercent != 42.5 {
+		t.Fatalf("unexpected GPU telemetry: %#v", telemetry)
 	}
 }
 
@@ -132,5 +143,24 @@ func TestGeneralTaskWireRoundTrip(t *testing.T) {
 	}
 	if out.TaskID != in.TaskID || out.Spec.Runtime != "python" || out.Spec.Environment["MODE"] != "test" || len(out.Spec.InputArtifacts) != 1 || out.Spec.Retry.MaxRetries != 2 || out.Spec.Requirements.GPUCount != 1 || out.Spec.PackageManifest == nil || out.Spec.PackageManifest.Environment["MODEL"] != "demo" {
 		t.Fatalf("general task mismatch: %#v", out)
+	}
+}
+
+func TestTaskOutputChunkDecodesStreamPayload(t *testing.T) {
+	var payload bytes.Buffer
+	_ = binary.Write(&payload, binary.LittleEndian, uint64(99))
+	if err := writeString(&payload, "stdout"); err != nil {
+		t.Fatal(err)
+	}
+	payload.WriteByte(1)
+	if err := writeBytes(&payload, []byte("token")); err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := decodeTaskOutput(payload.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunk.TaskID != 99 || chunk.Stream != "stdout" || !chunk.Final || string(chunk.Data) != "token" {
+		t.Fatalf("unexpected task output chunk: %#v", chunk)
 	}
 }

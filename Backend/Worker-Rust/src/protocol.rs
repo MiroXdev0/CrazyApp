@@ -264,6 +264,8 @@ pub struct NodeInfo {
     pub arch: String,
     pub cpu_model: String,
     pub cpu_cores: u32,
+    pub logical_cpu_cores: u32,
+    pub physical_cpu_cores: u32,
     pub ram_gb: u64,
     pub gpu: GPUInfo,
     pub runtimes: Vec<String>,
@@ -389,6 +391,38 @@ pub struct ArtifactChunk {
     pub data: Vec<u8>,
 }
 
+pub fn encode_artifact_begin(task_id: u64, artifact: &ArtifactSpec) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    put_u64(&mut out, task_id);
+    put_string(&mut out, &artifact.id)?;
+    put_string(&mut out, &artifact.name)?;
+    put_string(&mut out, &artifact.sha256)?;
+    put_string(&mut out, &artifact.kind)?;
+    put_u64(&mut out, artifact.size);
+    Ok(out)
+}
+
+pub fn encode_artifact_chunk(
+    task_id: u64,
+    artifact_id: &str,
+    offset: u64,
+    data: &[u8],
+) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    put_u64(&mut out, task_id);
+    put_string(&mut out, artifact_id)?;
+    put_u64(&mut out, offset);
+    put_bytes(&mut out, data)?;
+    Ok(out)
+}
+
+pub fn encode_artifact_end(task_id: u64, artifact_id: &str) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    put_u64(&mut out, task_id);
+    put_string(&mut out, artifact_id)?;
+    Ok(out)
+}
+
 pub fn decode_artifact_begin(data: &[u8]) -> io::Result<ArtifactBegin> {
     let mut cursor = 0;
     let task_id = get_u64(data, &mut cursor)?;
@@ -469,6 +503,10 @@ pub fn encode_register(node: &NodeInfo) -> io::Result<Vec<u8>> {
     put_u64(&mut out, node.gpu.vram_gb);
     put_u64(&mut out, node.gpu.count as u64);
     put_string_array(&mut out, &node.gpu.capabilities)?;
+    // Topology fields are appended so older controllers can still decode the
+    // original registration payload and its capacity fields.
+    put_u64(&mut out, node.logical_cpu_cores as u64);
+    put_u64(&mut out, node.physical_cpu_cores as u64);
     Ok(out)
 }
 
@@ -757,6 +795,20 @@ pub fn encode_general_task_result(result: &GeneralTaskResult) -> io::Result<Vec<
     Ok(out)
 }
 
+pub fn encode_task_output(
+    task_id: u64,
+    stream: &str,
+    final_chunk: bool,
+    data: &[u8],
+) -> io::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    put_u64(&mut out, task_id);
+    put_string(&mut out, stream)?;
+    out.push(u8::from(final_chunk));
+    put_bytes(&mut out, data)?;
+    Ok(out)
+}
+
 pub fn encode_register_ack(message: &str) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     put_string(&mut out, message)?;
@@ -808,9 +860,45 @@ pub fn encode_heartbeat_with_counters(
     out
 }
 
+pub fn encode_heartbeat_with_counters_and_gpu(
+    unix_ms: i64,
+    uptime_seconds: u64,
+    active_tasks: u32,
+    completed_tasks: u64,
+    failed_tasks: u64,
+    cpu_percent: Option<f64>,
+    memory_available_gb: Option<u64>,
+    gpu_available_vram_gb: Option<u64>,
+    gpu_utilization_percent: Option<f64>,
+) -> Vec<u8> {
+    let mut out = encode_heartbeat(
+        unix_ms,
+        uptime_seconds,
+        active_tasks,
+        cpu_percent,
+        memory_available_gb,
+    );
+    out.extend_from_slice(&completed_tasks.to_le_bytes());
+    out.extend_from_slice(&failed_tasks.to_le_bytes());
+    out.extend_from_slice(
+        &gpu_available_vram_gb
+            .map(|value| value * 1024)
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    let gpu_util_milli = gpu_utilization_percent
+        .map(|value| (value.clamp(0.0, 100.0) * 1000.0).round() as u32)
+        .unwrap_or(u32::MAX);
+    out.extend_from_slice(&gpu_util_milli.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out
+}
+
 #[cfg(test)]
 mod heartbeat_tests {
-    use super::{encode_heartbeat, encode_heartbeat_with_counters};
+    use super::{
+        encode_heartbeat, encode_heartbeat_with_counters, encode_heartbeat_with_counters_and_gpu,
+    };
 
     #[test]
     fn heartbeat_payloads_remain_backward_conscious() {
@@ -819,5 +907,21 @@ mod heartbeat_tests {
         assert_eq!(payload.len(), 48);
         assert_eq!(u64::from_le_bytes(payload[32..40].try_into().unwrap()), 11);
         assert_eq!(u64::from_le_bytes(payload[40..48].try_into().unwrap()), 7);
+        let gpu = encode_heartbeat_with_counters_and_gpu(
+            1,
+            2,
+            3,
+            11,
+            7,
+            Some(4.5),
+            Some(6),
+            Some(12),
+            Some(37.5),
+        );
+        assert_eq!(gpu.len(), 64);
+        assert_eq!(
+            u64::from_le_bytes(gpu[48..56].try_into().unwrap()),
+            12 * 1024
+        );
     }
 }

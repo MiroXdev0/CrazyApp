@@ -32,6 +32,22 @@ int main() {
         return 2;
     }
 
+    if (engine.parallel_sum_i32(values.data(), values.size()) != expected) {
+        std::cerr << "parallel sum mismatch\n";
+        return 3;
+    }
+    std::int64_t expected_xor = 0;
+    for (const auto value : values) expected_xor ^= value;
+    if (engine.parallel_xor_i32(values.data(), values.size()) != expected_xor) {
+        std::cerr << "parallel xor mismatch\n";
+        return 3;
+    }
+    std::vector<std::int32_t> rhs(values.size(), 2);
+    if (engine.parallel_dot_product_i32(values.data(), rhs.data(), values.size()) != expected * 2) {
+        std::cerr << "parallel dot mismatch\n";
+        return 3;
+    }
+
     constexpr std::size_t task_count = 256;
     std::vector<std::int64_t> outputs(task_count);
 

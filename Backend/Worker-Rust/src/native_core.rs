@@ -58,6 +58,10 @@ unsafe impl Sync for NativeCore {}
 
 impl NativeCore {
     pub fn load() -> io::Result<Self> {
+        Self::load_with_worker_count(0)
+    }
+
+    pub fn load_with_worker_count(worker_count: usize) -> io::Result<Self> {
         let path = resolve_core_library()?;
         let path = path.to_str().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "native core path is not UTF-8")
@@ -72,7 +76,7 @@ impl NativeCore {
         };
 
         let config = CoreConfig {
-            worker_count: 1,
+            worker_count,
             queue_capacity: 4096,
         };
         let engine_ptr = unsafe { (symbols.create)(&config) };

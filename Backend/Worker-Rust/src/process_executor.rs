@@ -1,4 +1,6 @@
-use crate::protocol::{GeneralTaskEnvelope, GeneralTaskResult};
+use crate::hashing::sha256_file;
+use crate::llama_cpp;
+use crate::protocol::{ArtifactSpec, GeneralTaskEnvelope, GeneralTaskResult};
 
 use std::{
     collections::HashMap,
@@ -14,19 +16,43 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub struct ProducedArtifact {
+    pub spec: ArtifactSpec,
+    pub path: PathBuf,
+}
+
+pub struct ProcessExecution {
+    pub result: GeneralTaskResult,
+    pub output_artifacts: Vec<ProducedArtifact>,
+    pub cleanup_directory: Option<PathBuf>,
+}
+
+const MAX_OUTPUT_ARTIFACT_SIZE: u64 = 4 << 30;
+
 fn capture_output<R: Read + Send + 'static>(
     mut reader: R,
     limit: u64,
+    artifact_path: Option<PathBuf>,
+    stream: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
 ) -> thread::JoinHandle<(Vec<u8>, bool)> {
     thread::spawn(move || {
         let limit = usize::try_from(limit.min(64 * 1024 * 1024)).unwrap_or(64 * 1024 * 1024);
         let mut value = Vec::new();
         let mut buffer = vec![0u8; 8192];
         let mut truncated = false;
+        let mut artifact = artifact_path.and_then(|path| File::create(path).ok());
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(size) => {
+                    if let Some(file) = artifact.as_mut() {
+                        if file.write_all(&buffer[..size]).is_err() {
+                            artifact = None;
+                        }
+                    }
+                    if let Some(stream) = &stream {
+                        stream(&buffer[..size]);
+                    }
                     if value.len() < limit {
                         let remaining = limit - value.len();
                         value.extend_from_slice(&buffer[..size.min(remaining)]);
@@ -69,6 +95,9 @@ fn runtime_program(runtime: &str) -> Result<String, String> {
 
 fn command_for_task(task: &GeneralTaskEnvelope) -> Result<Command, String> {
     let spec = &task.spec;
+    if spec.workload_kind == "ai-llama.cpp" {
+        return llama_cpp::command_for_task(task);
+    }
     let mut command = match spec.task_type.as_str() {
         "PROCESS" | "COMMAND" => Command::new(&spec.executable),
         "SCRIPT" => {
@@ -98,7 +127,23 @@ fn command_for_task(task: &GeneralTaskEnvelope) -> Result<Command, String> {
 }
 
 fn kill_and_wait(child: &mut Child) -> io::Result<Option<ExitStatus>> {
-    let _ = child.kill();
+    #[cfg(windows)]
+    {
+        // Tasks launched through cmd.exe can outlive the shell (for example,
+        // ping in the timeout test). Terminate the process tree so inherited
+        // stdout/stderr handles cannot keep the capture threads blocked.
+        let pid = child.id().to_string();
+        let taskkill = Command::new("taskkill")
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .status();
+        if taskkill.is_err() {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = child.kill();
+    }
     child.wait().map(Some)
 }
 
@@ -106,7 +151,7 @@ fn prepare_input_artifacts(
     task: &mut GeneralTaskEnvelope,
     artifacts: HashMap<String, PathBuf>,
 ) -> Result<Option<PathBuf>, String> {
-    if artifacts.is_empty() {
+    if artifacts.is_empty() && task.spec.output_artifacts.is_empty() {
         return Ok(None);
     }
     let workspace = if task.spec.working_directory.is_empty() {
@@ -263,7 +308,8 @@ pub fn execute(
     mut task: GeneralTaskEnvelope,
     cancelled: Arc<AtomicBool>,
     input_artifacts: HashMap<String, PathBuf>,
-) -> GeneralTaskResult {
+    stream: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
+) -> ProcessExecution {
     let started = Instant::now();
     let workspace = match prepare_input_artifacts(&mut task, input_artifacts) {
         Ok(workspace) => workspace,
@@ -287,12 +333,24 @@ pub fn execute(
             return failure(task, started, "executable_not_found", error.to_string());
         }
     };
+    let stdout_artifact =
+        if task.spec.workload_kind == "ai-llama.cpp" && !task.spec.output_artifacts.is_empty() {
+            Some(Path::new(&task.spec.working_directory).join(&task.spec.output_artifacts[0].name))
+        } else {
+            None
+        };
     let stdout_reader = child.stdout.take();
     let stderr_reader = child.stderr.take();
-    let stdout_thread =
-        stdout_reader.map(|reader| capture_output(reader, task.spec.stdout_limit_bytes));
-    let stderr_thread =
-        stderr_reader.map(|reader| capture_output(reader, task.spec.stderr_limit_bytes));
+    let stdout_thread = stdout_reader.map(|reader| {
+        capture_output(
+            reader,
+            task.spec.stdout_limit_bytes,
+            stdout_artifact,
+            stream,
+        )
+    });
+    let stderr_thread = stderr_reader
+        .map(|reader| capture_output(reader, task.spec.stderr_limit_bytes, None, None));
     let stdin_data = task.spec.stdin.clone();
     let stdin_thread = child.stdin.take().map(|mut stdin| {
         thread::spawn(move || {
@@ -353,9 +411,9 @@ pub fn execute(
     if let Some(thread) = stdin_thread {
         let _ = thread.join();
     }
-    let result = GeneralTaskResult {
+    let mut result = GeneralTaskResult {
         task_id: task.task_id,
-        job_id: task.job_id,
+        job_id: task.job_id.clone(),
         attempt: task.attempt,
         status: status.to_string(),
         exit_code,
@@ -367,10 +425,29 @@ pub fn execute(
         error_code,
         error,
     };
-    if let Some(path) = workspace {
-        let _ = fs::remove_dir_all(path);
+    let mut output_artifacts = Vec::new();
+    let mut cleanup_directory = workspace;
+    if result.status == "COMPLETED" && !task.spec.output_artifacts.is_empty() {
+        match collect_output_artifacts(&task) {
+            Ok(artifacts) => output_artifacts = artifacts,
+            Err(error) => {
+                result.status = "FAILED".to_string();
+                result.exit_code = None;
+                result.error_code = "output_artifact_failed".to_string();
+                result.error = error;
+            }
+        }
     }
-    result
+    if output_artifacts.is_empty() {
+        if let Some(path) = cleanup_directory.take() {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+    ProcessExecution {
+        result,
+        output_artifacts,
+        cleanup_directory,
+    }
 }
 
 fn failure(
@@ -378,28 +455,66 @@ fn failure(
     started: Instant,
     code: &str,
     message: String,
-) -> GeneralTaskResult {
-    GeneralTaskResult {
-        task_id: task.task_id,
-        job_id: task.job_id,
-        attempt: task.attempt,
-        status: "FAILED".to_string(),
-        exit_code: None,
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        stdout_truncated: false,
-        stderr_truncated: false,
-        duration_us: started.elapsed().as_micros() as u64,
-        error_code: code.to_string(),
-        error: message,
+) -> ProcessExecution {
+    ProcessExecution {
+        result: GeneralTaskResult {
+            task_id: task.task_id,
+            job_id: task.job_id,
+            attempt: task.attempt,
+            status: "FAILED".to_string(),
+            exit_code: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            duration_us: started.elapsed().as_micros() as u64,
+            error_code: code.to_string(),
+            error: message,
+        },
+        output_artifacts: Vec::new(),
+        cleanup_directory: None,
     }
+}
+
+fn collect_output_artifacts(task: &GeneralTaskEnvelope) -> Result<Vec<ProducedArtifact>, String> {
+    let directory = PathBuf::from(&task.spec.working_directory);
+    let mut artifacts = Vec::with_capacity(task.spec.output_artifacts.len());
+    for requested in &task.spec.output_artifacts {
+        let name = Path::new(&requested.name);
+        if name.file_name().and_then(|value| value.to_str()) != Some(requested.name.as_str()) {
+            return Err(format!("unsafe output artifact name: {}", requested.name));
+        }
+        let path = directory.join(name);
+        let metadata = fs::metadata(&path).map_err(|error| {
+            format!("output artifact {} is unavailable: {error}", requested.name)
+        })?;
+        if !metadata.is_file() {
+            return Err(format!(
+                "output artifact {} is not a regular file",
+                requested.name
+            ));
+        }
+        if metadata.len() > MAX_OUTPUT_ARTIFACT_SIZE {
+            return Err(format!(
+                "output artifact {} exceeds the 4 GiB limit",
+                requested.name
+            ));
+        }
+        let sha256 = sha256_file(&path).map_err(|error| error.to_string())?;
+        let mut spec = requested.clone();
+        spec.size = metadata.len();
+        spec.sha256 = sha256;
+        artifacts.push(ProducedArtifact { spec, path });
+    }
+    Ok(artifacts)
 }
 
 #[cfg(test)]
 mod tests {
     use super::execute;
-    use crate::protocol::{GeneralTaskEnvelope, GeneralTaskSpec};
-    use std::sync::{Arc, atomic::AtomicBool};
+    use crate::protocol::{ArtifactSpec, GeneralTaskEnvelope, GeneralTaskSpec};
+    use std::fs;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
     fn task(executable: &str, arguments: &[&str]) -> GeneralTaskEnvelope {
         GeneralTaskEnvelope {
@@ -456,9 +571,30 @@ mod tests {
             task,
             Arc::new(AtomicBool::new(false)),
             std::collections::HashMap::new(),
+            None,
         );
-        assert_eq!(result.status, "COMPLETED");
-        assert!(String::from_utf8_lossy(&result.stdout).contains("hello"));
+        assert_eq!(result.result.status, "COMPLETED");
+        assert!(String::from_utf8_lossy(&result.result.stdout).contains("hello"));
+    }
+
+    #[test]
+    fn streams_stdout_chunks_to_the_runtime_consumer() {
+        #[cfg(windows)]
+        let task = task("cmd.exe", &["/C", "echo streamed"]);
+        #[cfg(not(windows))]
+        let task = task("sh", &["-c", "printf streamed"]);
+        let chunks = Arc::new(Mutex::new(Vec::new()));
+        let target = Arc::clone(&chunks);
+        let result = execute(
+            task,
+            Arc::new(AtomicBool::new(false)),
+            std::collections::HashMap::new(),
+            Some(Arc::new(move |chunk: &[u8]| {
+                target.lock().unwrap().extend_from_slice(chunk);
+            })),
+        );
+        assert_eq!(result.result.status, "COMPLETED");
+        assert!(String::from_utf8_lossy(&chunks.lock().unwrap()).contains("streamed"));
     }
 
     #[test]
@@ -472,7 +608,38 @@ mod tests {
             task,
             Arc::new(AtomicBool::new(false)),
             std::collections::HashMap::new(),
+            None,
         );
-        assert_eq!(result.status, "TIMED_OUT");
+        assert_eq!(result.result.status, "TIMED_OUT");
+    }
+
+    #[test]
+    fn collects_declared_output_artifact_after_process() {
+        #[cfg(windows)]
+        let task = task("cmd.exe", &["/C", "echo output>result.txt"]);
+        #[cfg(not(windows))]
+        let task = task("sh", &["-c", "printf output > result.txt"]);
+        let mut task = task;
+        task.spec.output_artifacts = vec![ArtifactSpec {
+            id: "OUT-1".to_string(),
+            name: "result.txt".to_string(),
+            size: 0,
+            sha256: String::new(),
+            kind: "output".to_string(),
+        }];
+        let execution = execute(
+            task,
+            Arc::new(AtomicBool::new(false)),
+            std::collections::HashMap::new(),
+            None,
+        );
+        assert_eq!(execution.result.status, "COMPLETED");
+        assert_eq!(execution.output_artifacts.len(), 1);
+        assert!(execution.output_artifacts[0].spec.size > 0);
+        let path = execution.output_artifacts[0].path.clone();
+        fs::remove_file(path).unwrap();
+        if let Some(directory) = execution.cleanup_directory {
+            let _ = fs::remove_dir_all(directory);
+        }
     }
 }

@@ -88,16 +88,17 @@ type GeneralTaskSpec struct {
 }
 
 type GeneralTaskResult struct {
-	Status          string `json:"status"`
-	ExitCode        *int32 `json:"exit_code,omitempty"`
-	StdoutB64       string `json:"stdout_base64,omitempty"`
-	StderrB64       string `json:"stderr_base64,omitempty"`
-	StdoutTruncated bool   `json:"stdout_truncated"`
-	StderrTruncated bool   `json:"stderr_truncated"`
-	DurationUS      uint64 `json:"duration_us"`
-	ErrorCode       string `json:"error_code,omitempty"`
-	Error           string `json:"error,omitempty"`
-	Attempt         uint32 `json:"attempt"`
+	Status          string         `json:"status"`
+	ExitCode        *int32         `json:"exit_code,omitempty"`
+	StdoutB64       string         `json:"stdout_base64,omitempty"`
+	StderrB64       string         `json:"stderr_base64,omitempty"`
+	StdoutTruncated bool           `json:"stdout_truncated"`
+	StderrTruncated bool           `json:"stderr_truncated"`
+	DurationUS      uint64         `json:"duration_us"`
+	ErrorCode       string         `json:"error_code,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Attempt         uint32         `json:"attempt"`
+	OutputArtifacts []TaskArtifact `json:"output_artifacts,omitempty"`
 }
 
 type taskRequest struct {

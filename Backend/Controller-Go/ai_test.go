@@ -1,10 +1,176 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWorkerOutputArtifactIsVerifiedAndStored(t *testing.T) {
+	controller := NewController("", "")
+	controller.artifactDir = t.TempDir()
+	controller.jobs["JOB-output"] = &Job{
+		ID:     "JOB-output",
+		Status: JobRunning,
+		Task:   &GeneralTaskSpec{OutputArtifacts: []TaskArtifact{{ID: "OUT-1", Name: "result.json", Kind: "output"}}},
+	}
+	controller.taskToJob[77] = "JOB-output"
+	controller.taskToNode[77] = "worker-output"
+	payload := []byte(`{"value":42}`)
+	hash := sha256.Sum256(payload)
+	begin, err := encodeArtifactBegin(77, TaskArtifact{ID: "OUT-1", Name: "result.json", Size: uint64(len(payload)), SHA256: hex.EncodeToString(hash[:]), Kind: "output"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.beginWorkerArtifact("worker-output", begin); err != nil {
+		t.Fatal(err)
+	}
+	chunk, err := encodeArtifactChunk(77, "OUT-1", 0, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.appendWorkerArtifact("worker-output", chunk); err != nil {
+		t.Fatal(err)
+	}
+	end, err := encodeArtifactEnd(77, "OUT-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.finishWorkerArtifact("worker-output", end); err != nil {
+		t.Fatal(err)
+	}
+	record := controller.artifacts["OUT-1"]
+	if record == nil || record.Size != uint64(len(payload)) || len(controller.taskArtifacts[77]) != 1 {
+		t.Fatalf("output artifact was not stored: record=%#v task=%#v", record, controller.taskArtifacts[77])
+	}
+}
+
+func TestSafeTensorsInspectionEstimatesMemory(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "model.safetensors")
+	header, err := json.Marshal(map[string]any{
+		"__metadata__": map[string]string{"model_type": "demo-transformer"},
+		"weight":       map[string]any{"dtype": "F32", "shape": []uint64{2, 3}, "data_offsets": []uint64{0, 24}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(file, binary.LittleEndian, uint64(len(header))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(header); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(make([]byte, 24)); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := inspectAIPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Format != "safetensors" || inspection.Architecture != "demo-transformer" || inspection.ParameterCount != 6 || inspection.EstimatedRAMGB == 0 || inspection.EstimatedVRAMGB == 0 {
+		t.Fatalf("unexpected inspection: %#v", inspection)
+	}
+}
+
+func TestGGUFInspectionReadsArchitectureQuantizationAndContext(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tiny.gguf")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeString := func(value string) {
+		if err := binary.Write(file, binary.LittleEndian, uint64(len(value))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString(value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := file.Write([]byte("GGUF")); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []uint32{3} {
+		if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, value := range []uint64{1, 2} {
+		if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeString("general.architecture")
+	if err := binary.Write(file, binary.LittleEndian, uint32(8)); err != nil {
+		t.Fatal(err)
+	}
+	writeString("llama")
+	writeString("llama.context_length")
+	if err := binary.Write(file, binary.LittleEndian, uint32(4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(file, binary.LittleEndian, uint32(4096)); err != nil {
+		t.Fatal(err)
+	}
+	writeString("blk.0.weight")
+	if err := binary.Write(file, binary.LittleEndian, uint32(2)); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []uint64{2, 2} {
+		if err := binary.Write(file, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := binary.Write(file, binary.LittleEndian, uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(file, binary.LittleEndian, uint64(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := inspectAIPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Status != "VALIDATED" || inspection.Architecture != "llama" || inspection.ContextLength != 4096 || inspection.TensorCount != 1 || inspection.ParameterCount != 4 {
+		t.Fatalf("unexpected GGUF inspection: %#v", inspection)
+	}
+}
+
+func TestSchedulerUsesLiveMemoryAndVRAMAvailability(t *testing.T) {
+	controller := NewController("", "")
+	node := aiTestWorker("resource-worker", 1)
+	node.Telemetry.MemoryAvailableKnown = true
+	node.Telemetry.MemoryAvailableGB = 8
+	node.Telemetry.GPUAvailableVRAMKnown = true
+	node.Telemetry.GPUAvailableVRAMGB = 6
+	controller.nodes[node.Info.ID] = node
+	controller.sessions[node.Info.ID] = newSession(nil)
+	if controller.canFit(node, ResourceRequirements{CPUCores: 1, RAMGB: 12, VRAMGB: 1}) {
+		t.Fatal("scheduler accepted a task larger than live RAM availability")
+	}
+	if controller.canFit(node, ResourceRequirements{CPUCores: 1, RAMGB: 1, VRAMGB: 8}) {
+		t.Fatal("scheduler accepted a task larger than live VRAM availability")
+	}
+	if !controller.canFit(node, ResourceRequirements{CPUCores: 1, RAMGB: 4, VRAMGB: 4}) {
+		t.Fatal("scheduler rejected resources that fit live availability")
+	}
+}
 
 func aiTestWorker(id string, capacity float64) *NodeRecord {
 	node := readyNode(id, 8, 32)
@@ -63,6 +229,24 @@ func TestAIPlanFormsCapabilityAwareWorkerGroup(t *testing.T) {
 	launch := plan.Launches[0].Task
 	if launch.Type != TaskTypeScript || launch.Target.AllowedWorkerIDs[0] != plan.Workers[0].WorkerID || launch.Environment["NODREN_AI_WORLD_SIZE"] != "2" {
 		t.Fatalf("launch configuration is incomplete: %#v", launch)
+	}
+}
+
+func TestAIPlanUsesAllSelectedWorkerCPUsByDefaultWhenRequested(t *testing.T) {
+	controller := NewController("", "")
+	node := aiTestWorker("full-cpu-worker", 1)
+	controller.nodes[node.Info.ID] = node
+	controller.sessions[node.Info.ID] = newSession(nil)
+	plan, err := controller.createAIPlan(AIWorkloadSpec{
+		Runtime:    "python",
+		EntryPoint: "run.py",
+		CPUAuto:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Workers[0].CPUCores != node.Info.CPUCores || plan.Launches[0].Task.Requirements.CPUCores != node.Info.CPUCores {
+		t.Fatalf("AI plan did not resolve automatic CPU capacity: worker=%d launch=%d node=%d", plan.Workers[0].CPUCores, plan.Launches[0].Task.Requirements.CPUCores, node.Info.CPUCores)
 	}
 }
 

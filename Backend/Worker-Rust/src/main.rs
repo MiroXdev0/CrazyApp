@@ -1,5 +1,6 @@
 mod executor;
 mod hashing;
+mod llama_cpp;
 mod native_core;
 mod process_executor;
 mod protocol;
@@ -9,9 +10,12 @@ use native_core::NativeCore;
 use protocol::{
     Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult, decode_artifact_begin,
     decode_artifact_chunk, decode_artifact_end, decode_general_task, decode_task_batch,
-    encode_heartbeat, encode_heartbeat_with_counters, encode_register, encode_register_ack,
+    encode_heartbeat, encode_heartbeat_with_counters_and_gpu, encode_register, encode_register_ack,
     read_frame, write_frame,
 };
+
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
 
 use std::{
     env, io,
@@ -30,6 +34,7 @@ struct WorkerConfig {
     controller: String,
     id: String,
     cpu_override: Option<u32>,
+    worker_concurrency_override: Option<u32>,
     gpu_vendor: String,
     gpu_model: String,
     gpu_vram_gb: u64,
@@ -86,6 +91,93 @@ fn cpu_model() -> String {
     String::new()
 }
 
+fn cpu_topology() -> (u32, u32) {
+    let logical = thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+        .max(1);
+
+    #[cfg(target_os = "linux")]
+    {
+        let mut physical_ids = HashSet::new();
+        if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu") {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.strip_prefix("cpu").is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit())
+                }) {
+                    continue;
+                }
+                let topology = entry.path().join("topology");
+                let package = std::fs::read_to_string(topology.join("physical_package_id"))
+                    .ok()
+                    .map(|value| value.trim().to_string());
+                let core = std::fs::read_to_string(topology.join("core_id"))
+                    .ok()
+                    .map(|value| value.trim().to_string());
+                if let (Some(package), Some(core)) = (package, core) {
+                    physical_ids.insert((package, core));
+                }
+            }
+        }
+        if !physical_ids.is_empty() {
+            return (logical, physical_ids.len() as u32);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Count PROCESSOR_CORE records without assuming a single 64-bit
+        // processor group. This gives a physical-core count while the
+        // standard library supplies the logical capacity above.
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetLogicalProcessorInformationEx(
+                relationship: u32,
+                buffer: *mut u8,
+                returned_length: *mut u32,
+            ) -> i32;
+        }
+        let mut length = 0u32;
+        let _ = unsafe { GetLogicalProcessorInformationEx(0, std::ptr::null_mut(), &mut length) };
+        if length > 0 {
+            let mut buffer = vec![0u8; length as usize];
+            if unsafe { GetLogicalProcessorInformationEx(0, buffer.as_mut_ptr(), &mut length) } != 0
+            {
+                let mut offset = 0usize;
+                let mut physical = 0u32;
+                while offset + 8 <= length as usize {
+                    let relationship =
+                        u32::from_ne_bytes(buffer[offset..offset + 4].try_into().unwrap());
+                    let size =
+                        u32::from_ne_bytes(buffer[offset + 4..offset + 8].try_into().unwrap())
+                            as usize;
+                    if size < 8 || offset + size > length as usize {
+                        break;
+                    }
+                    if relationship == 0 {
+                        physical = physical.saturating_add(1);
+                    }
+                    offset += size;
+                }
+                if physical > 0 {
+                    return (logical, physical);
+                }
+            }
+        }
+    }
+
+    // Keep logical capacity exact on platforms that do not expose physical
+    // topology through a stable system interface.
+    (logical, logical)
+}
+
+fn effective_worker_concurrency(available_cpu: u32, requested: Option<u32>) -> usize {
+    requested
+        .unwrap_or(available_cpu)
+        .clamp(1, available_cpu.max(1)) as usize
+}
+
 fn available_runtimes() -> Vec<String> {
     let candidates = [
         "python",
@@ -97,7 +189,7 @@ fn available_runtimes() -> Vec<String> {
         "powershell",
         "pwsh",
     ];
-    candidates
+    let mut runtimes = candidates
         .iter()
         .filter(|runtime| {
             process::Command::new(runtime)
@@ -106,7 +198,55 @@ fn available_runtimes() -> Vec<String> {
                 .is_ok()
         })
         .map(|runtime| (*runtime).to_string())
-        .collect()
+        .collect::<Vec<_>>();
+
+    if llama_cpp::detect().is_some() && !runtimes.iter().any(|value| value == "llama.cpp") {
+        runtimes.push("llama.cpp".to_string());
+    }
+    if llama_cpp::detect()
+        .and_then(|runtime| runtime.gpu_backend().map(str::to_string))
+        .is_some()
+    {
+        runtimes.push("llama.cpp-gpu".to_string());
+    }
+
+    // Runtime capabilities are advertised only after the worker can import
+    // the actual package. This prevents the controller from scheduling an
+    // ONNX job onto a machine that merely has a Python executable.
+    for runtime in ["python", "python3"] {
+        if !runtimes.iter().any(|value| value == runtime) {
+            continue;
+        }
+        let probe = process::Command::new(runtime)
+            .args([
+                "-c",
+                "import onnxruntime as o; print(','.join(o.get_available_providers()))",
+            ])
+            .output();
+        let Ok(output) = probe else { continue };
+        if !output.status.success() {
+            continue;
+        }
+        let providers = String::from_utf8_lossy(&output.stdout);
+        if providers
+            .split(',')
+            .any(|value| value.trim() == "CPUExecutionProvider")
+        {
+            if !runtimes.iter().any(|value| value == "onnxruntime") {
+                runtimes.push("onnxruntime".to_string());
+            }
+        }
+        if providers
+            .split(',')
+            .any(|value| value.trim() == "CUDAExecutionProvider")
+        {
+            if !runtimes.iter().any(|value| value == "onnxruntime-cuda") {
+                runtimes.push("onnxruntime-cuda".to_string());
+            }
+        }
+        break;
+    }
+    runtimes
 }
 
 fn detect_ram_gb() -> u64 {
@@ -175,6 +315,9 @@ fn build_config() -> WorkerConfig {
             .or_else(|| env::var("NODREN_WORKER_ID").ok())
             .unwrap_or(default_id),
         cpu_override: arg_value("--cpu-cores").and_then(|v| v.parse().ok()),
+        worker_concurrency_override: arg_value("--worker-concurrency")
+            .or_else(|| env::var("NODREN_WORKER_CONCURRENCY").ok())
+            .and_then(|v| v.parse().ok()),
         gpu_vendor: arg_value("--gpu-vendor").unwrap_or_default(),
         gpu_model: arg_value("--gpu-model").unwrap_or_default(),
         gpu_vram_gb: arg_value("--gpu-vram-gb")
@@ -234,10 +377,10 @@ fn detect_nvidia_gpu() -> GPUInfo {
         };
     };
     let fields = first.split(',').map(str::trim).collect::<Vec<_>>();
-    let vram_mb = fields
-        .get(1)
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+    let total_vram_mb = rows
+        .iter()
+        .filter_map(|row| row.split(',').nth(1)?.trim().parse::<u64>().ok())
+        .sum::<u64>();
     let mut capabilities = vec!["cuda".to_string()];
     if let Some(compute_capability) = fields.get(3).filter(|value| !value.is_empty()) {
         capabilities.push(format!("cuda_compute_{compute_capability}"));
@@ -245,7 +388,7 @@ fn detect_nvidia_gpu() -> GPUInfo {
     GPUInfo {
         vendor: "NVIDIA".to_string(),
         model: fields.first().copied().unwrap_or_default().to_string(),
-        vram_gb: vram_mb.div_ceil(1024),
+        vram_gb: total_vram_mb.div_ceil(1024),
         count: rows.len() as u32,
         capabilities,
         driver: fields.get(2).copied().unwrap_or_default().to_string(),
@@ -286,28 +429,107 @@ fn local_gpu_info(config: &WorkerConfig) -> GPUInfo {
     }
 }
 
+fn nvidia_gpu_telemetry() -> (Option<u64>, Option<f64>) {
+    let output = process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=memory.free,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return (None, None);
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+
+    let output_text = String::from_utf8_lossy(&output.stdout);
+    let rows = output_text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return (None, None);
+    }
+    let mut free_mb = 0u64;
+    let mut utilization_sum = 0.0f64;
+    let mut free_known = true;
+    let mut utilization_known = true;
+    for row in rows.iter() {
+        let fields = row.split(',').map(str::trim).collect::<Vec<_>>();
+        match fields.first().and_then(|value| value.parse::<u64>().ok()) {
+            Some(value) => free_mb = free_mb.saturating_add(value),
+            None => free_known = false,
+        }
+        match fields.get(1).and_then(|value| value.parse::<f64>().ok()) {
+            Some(value) if value.is_finite() => utilization_sum += value,
+            _ => utilization_known = false,
+        }
+    }
+    let available_gb = free_known.then(|| free_mb / 1024);
+    let utilization = utilization_known
+        .then(|| utilization_sum / rows.len() as f64)
+        .filter(|value| value.is_finite());
+    (available_gb, utilization)
+}
+
 fn local_node_info(config: &WorkerConfig) -> NodeInfo {
+    let (logical_cpu_cores, physical_cpu_cores) = cpu_topology();
+    let advertised_cpu = config.cpu_override.unwrap_or(logical_cpu_cores).max(1);
+    // CPUCores is the schedulable capacity used by the controller. The
+    // topology fields retain the actual hardware capacity, so an intentional
+    // concurrency limit never masquerades as a smaller physical machine.
+    let cpu_cores =
+        effective_worker_concurrency(advertised_cpu, config.worker_concurrency_override) as u32;
+    let runtimes = available_runtimes();
+    let llama_runtime = llama_cpp::detect();
+    let gpu = local_gpu_info(config);
     NodeInfo {
         id: config.id.clone(),
         hostname: hostname(),
         os: os_name().to_string(),
         arch: arch_name().to_string(),
         cpu_model: cpu_model(),
-        cpu_cores: config.cpu_override.unwrap_or_else(|| {
-            thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or(1)
-        }),
+        cpu_cores,
+        logical_cpu_cores,
+        physical_cpu_cores,
         ram_gb: config.ram_override_gb.unwrap_or_else(detect_ram_gb),
-        gpu: local_gpu_info(config),
-        runtimes: available_runtimes(),
+        gpu: gpu.clone(),
+        runtimes: runtimes.clone(),
         execution_types: vec![
             "PROCESS".to_string(),
             "SCRIPT".to_string(),
             "COMMAND".to_string(),
             "NATIVE_WORKLOAD".to_string(),
         ],
-        capabilities: vec!["process".to_string(), "native_workload".to_string()],
+        capabilities: {
+            let mut values = vec!["process".to_string(), "native_workload".to_string()];
+            if runtimes.iter().any(|value| value == "onnxruntime") {
+                values.push("onnxruntime".to_string());
+            }
+            if runtimes.iter().any(|value| value == "onnxruntime-cuda") {
+                values.push("onnxruntime-cuda".to_string());
+            }
+            if runtimes.iter().any(|value| value == "llama.cpp") {
+                values.push("llama.cpp".to_string());
+                values.push("llama.cpp-cpu".to_string());
+                if let Some(runtime) = &llama_runtime {
+                    values.push(format!("llama.cpp-version:{}", runtime.version()));
+                    if let Some(backend) = runtime.gpu_backend() {
+                        values.push(format!("llama.cpp-backend:{backend}"));
+                    }
+                }
+            }
+            if runtimes.iter().any(|value| value == "llama.cpp-gpu")
+                && gpu.count > 0
+                && !gpu.runtime.is_empty()
+            {
+                values.push("llama.cpp-gpu".to_string());
+            }
+            values
+        },
     }
 }
 
@@ -548,7 +770,8 @@ fn run_connection(
                     Some((busy_delta as f64 / total_delta as f64) * 100.0)
                 }
             });
-            let payload = encode_heartbeat_with_counters(
+            let (gpu_available_vram_gb, gpu_utilization_percent) = nvidia_gpu_telemetry();
+            let payload = encode_heartbeat_with_counters_and_gpu(
                 now_millis(),
                 started_at.elapsed().as_secs(),
                 active_tasks.load(Ordering::Acquire),
@@ -556,6 +779,8 @@ fn run_connection(
                 failed_tasks.load(Ordering::Acquire),
                 cpu_percent,
                 available_memory_gb(),
+                gpu_available_vram_gb,
+                gpu_utilization_percent,
             );
             let mut stream = match heartbeat_writer.lock() {
                 Ok(stream) => stream,
@@ -693,12 +918,20 @@ fn run_connection(
 
 fn run(config: WorkerConfig) -> io::Result<()> {
     let node = local_node_info(&config);
-    let core = Arc::new(NativeCore::load()?);
-    let executor = WorkerExecutor::new(node.clone(), Arc::clone(&core));
+    let worker_concurrency =
+        effective_worker_concurrency(node.cpu_cores, config.worker_concurrency_override);
+    let core = Arc::new(NativeCore::load_with_worker_count(worker_concurrency)?);
+    let executor = WorkerExecutor::new(node.clone(), Arc::clone(&core), worker_concurrency);
     let started_at = Instant::now();
     println!(
-        "[nodren-worker] id={} cpu={} ram={}GB gpu={}",
-        node.id, node.cpu_cores, node.ram_gb, node.gpu.model
+        "[nodren-worker] id={} cpu={} logical={} physical={} concurrency={} ram={}GB gpu={}",
+        node.id,
+        node.cpu_cores,
+        node.logical_cpu_cores,
+        node.physical_cpu_cores,
+        worker_concurrency,
+        node.ram_gb,
+        node.gpu.model
     );
 
     let mut reconnected = false;
@@ -735,6 +968,24 @@ fn main() {
 
 fn print_help() {
     println!(
-        "Nodren Worker 0.2.0\n\nUsage:\n    nodren-worker.exe --controller <host:port> [options]\n\nOptions:\n    --controller <host:port>    Controller TCP address\n    --id <worker-id>            Stable worker identity\n    --cpu-cores <count>         Override discovered CPU capacity\n    --ram-gb <count>            Override discovered RAM capacity\n    --gpu-vendor <name>         Advertised GPU vendor\n    --gpu-model <name>          Advertised GPU model\n    --gpu-vram-gb <count>       Advertised GPU memory\n    --gpu-count <count>         Advertised GPU count\n\nNVIDIA metadata is discovered with nvidia-smi when available; explicit GPU\noptions override discovered values.\n\nEnvironment:\n    NODREN_CONTROLLER_ADDR       Fallback Controller TCP address\n    NODREN_WORKER_ID             Fallback worker identity\n"
+        "Nodren Worker 0.2.0\n\nUsage:\n    nodren-worker.exe --controller <host:port> [options]\n\nOptions:\n    --controller <host:port>    Controller TCP address\n    --id <worker-id>            Stable worker identity\n    --cpu-cores <count>         Override discovered logical CPU capacity\n    --worker-concurrency <n>    Limit executor/Core concurrency (default: all logical CPUs)\n    --ram-gb <count>            Override discovered RAM capacity\n    --gpu-vendor <name>         Advertised GPU vendor\n    --gpu-model <name>          Advertised GPU model\n    --gpu-vram-gb <count>       Advertised GPU memory\n    --gpu-count <count>         Advertised GPU count\n\nNVIDIA metadata is discovered with nvidia-smi when available; explicit GPU\noptions override discovered values.\n\nEnvironment:\n    NODREN_CONTROLLER_ADDR       Fallback Controller TCP address\n    NODREN_WORKER_ID             Fallback worker identity\n    NODREN_WORKER_CONCURRENCY    Fallback executor/Core concurrency override\n"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_worker_concurrency;
+
+    #[test]
+    fn concurrency_defaults_to_full_available_capacity() {
+        assert_eq!(effective_worker_concurrency(4, None), 4);
+        assert_eq!(effective_worker_concurrency(64, None), 64);
+    }
+
+    #[test]
+    fn concurrency_override_is_explicit_and_bounded() {
+        assert_eq!(effective_worker_concurrency(64, Some(12)), 12);
+        assert_eq!(effective_worker_concurrency(64, Some(128)), 64);
+        assert_eq!(effective_worker_concurrency(4, Some(0)), 1);
+    }
 }

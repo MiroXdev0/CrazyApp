@@ -50,12 +50,22 @@ public sealed class ClusterStatus
     public ulong TotalRamGb { get; set; }
     [JsonPropertyName("available_ram_gb")]
     public ulong AvailableRamGb { get; set; }
+    [JsonPropertyName("total_gpus")]
+    public ulong TotalGpus { get; set; }
+    [JsonPropertyName("total_vram_gb")]
+    public ulong TotalVramGb { get; set; }
+    [JsonPropertyName("available_vram_gb")]
+    public ulong AvailableVramGb { get; set; }
     [JsonPropertyName("memory_available_gb")]
     public ulong MemoryAvailableGb { get; set; }
     [JsonPropertyName("cpu_utilization_percent")]
     public double CpuUtilizationPercent { get; set; }
     [JsonPropertyName("memory_utilization_percent")]
     public double MemoryUtilizationPercent { get; set; }
+    [JsonPropertyName("gpu_utilization_percent")]
+    public double GpuUtilizationPercent { get; set; } = -1;
+    [JsonPropertyName("gpu_utilization_known")]
+    public bool GpuUtilizationKnown { get; set; }
     [JsonPropertyName("telemetry_workers")]
     public int TelemetryWorkers { get; set; }
     [JsonPropertyName("memory_telemetry_workers")]
@@ -70,6 +80,8 @@ public sealed class GpuInfo
     public string Model { get; set; } = string.Empty;
     [JsonPropertyName("vram_gb")]
     public ulong VramGb { get; set; }
+    [JsonPropertyName("compute_capability")]
+    public string ComputeCapability { get; set; } = string.Empty;
     public uint Count { get; set; }
     public List<string> Capabilities { get; set; } = [];
     public string Driver { get; set; } = string.Empty;
@@ -86,6 +98,10 @@ public sealed class NodeInfo
     public string CpuModel { get; set; } = string.Empty;
     [JsonPropertyName("cpu_cores")]
     public uint CpuCores { get; set; }
+    [JsonPropertyName("logical_cpu_cores")]
+    public uint LogicalCpuCores { get; set; }
+    [JsonPropertyName("physical_cpu_cores")]
+    public uint PhysicalCpuCores { get; set; }
     [JsonPropertyName("ram_gb")]
     public ulong RamGb { get; set; }
     public GpuInfo Gpu { get; set; } = new();
@@ -149,6 +165,12 @@ public sealed class WorkerTelemetry
     public bool MemoryAvailableKnown { get; set; }
     [JsonPropertyName("memory_utilization_percent")]
     public double MemoryUtilizationPercent { get; set; }
+    [JsonPropertyName("gpu_available_vram_gb")]
+    public ulong GpuAvailableVramGb { get; set; }
+    [JsonPropertyName("gpu_available_vram_known")]
+    public bool GpuAvailableVramKnown { get; set; }
+    [JsonPropertyName("gpu_utilization_percent")]
+    public double GpuUtilizationPercent { get; set; } = -1;
 }
 
 public sealed class ResourceRequirements

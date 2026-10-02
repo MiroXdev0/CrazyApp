@@ -10,6 +10,8 @@
 namespace nodren {
 namespace {
 
+constexpr std::size_t kParallelThreshold = 1u << 16;
+
 std::int64_t xor_bytes(
     const std::int32_t* values,
     std::size_t count,
@@ -91,7 +93,15 @@ WorkloadResult dispatch_workload(
         task.payload = values.data();
         task.count = values.size();
         task.fn = command == "sum" ? nullptr : xor_bytes;
-        const TaskResult result = engine.execute_sync(task);
+        const auto value = values.size() >= kParallelThreshold
+            ? (command == "sum"
+                ? engine.parallel_sum_i32(values.data(), values.size())
+                : engine.parallel_xor_i32(values.data(), values.size()))
+            : engine.execute_sync(task).value;
+        TaskResult result{};
+        result.id = task_id;
+        result.value = value;
+        result.state = TaskState::Completed;
         if (result.state != TaskState::Completed) {
             return failed(task_id, WorkloadError::ExecutionFailed);
         }
@@ -130,7 +140,13 @@ WorkloadResult dispatch_workload(
     task.count = lhs.size();
     task.fn = dot_product;
     task.user_data = rhs.data();
-    const TaskResult result = engine.execute_sync(task);
+    const auto value = lhs.size() >= kParallelThreshold
+        ? engine.parallel_dot_product_i32(lhs.data(), rhs.data(), lhs.size())
+        : engine.execute_sync(task).value;
+    TaskResult result{};
+    result.id = task_id;
+    result.value = value;
+    result.state = TaskState::Completed;
     if (result.state != TaskState::Completed) {
         return failed(task_id, WorkloadError::ExecutionFailed);
     }

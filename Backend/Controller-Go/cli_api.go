@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -193,6 +195,56 @@ func (c *cliClient) events() error {
 		}
 	}
 	return decoder.Err()
+}
+
+func (c *cliClient) streamAIOutput(taskIDs []string) (func(), error) {
+	allowed := make(map[string]struct{}, len(taskIDs))
+	for _, taskID := range taskIDs {
+		allowed[taskID] = struct{}{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/events", nil)
+	if err != nil {
+		cancel()
+		return func() {}, err
+	}
+	response, err := (&http.Client{Timeout: 0}).Do(request)
+	if err != nil {
+		cancel()
+		return func() {}, &cliError{message: fmt.Sprintf("Controller unreachable at %s: %v", c.baseURL, err)}
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		cancel()
+		return func() {}, &cliError{message: fmt.Sprintf("Controller returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))}
+	}
+	go func() {
+		defer response.Body.Close()
+		scanner := bufio.NewScanner(response.Body)
+		scanner.Buffer(make([]byte, 4096), 2<<20)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			var event controllerEvent
+			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil || event.Type != "task.output" {
+				continue
+			}
+			if _, ok := allowed[event.ID]; !ok || event.Stream != "stdout" || event.OutputB64 == "" {
+				continue
+			}
+			chunk, decodeErr := base64.StdEncoding.DecodeString(event.OutputB64)
+			if decodeErr == nil {
+				_, _ = os.Stdout.Write(chunk)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		_ = response.Body.Close()
+	}, nil
 }
 
 func (c *cliClient) jobAction(id, action string) (Job, error) {

@@ -3,14 +3,15 @@ use crate::native_core::NativeCore;
 use crate::process_executor;
 use crate::protocol::{
     ArtifactBegin, ArtifactChunk, ArtifactSpec, GeneralTaskEnvelope, MessageType, NodeInfo, Task,
-    encode_general_task_result, encode_task_results, write_frame,
+    encode_artifact_begin, encode_artifact_chunk, encode_artifact_end, encode_general_task_result,
+    encode_task_output, encode_task_results, write_frame,
 };
 use crate::{can_run, execute_task, resource_failure_result};
 
 use std::{
     collections::{HashMap, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     net::TcpStream,
     path::PathBuf,
     sync::{
@@ -106,6 +107,7 @@ impl WorkQueue {
 struct ResourceState {
     used_cpu: u32,
     used_ram: u64,
+    used_vram: u64,
 }
 
 struct ResourceGate {
@@ -113,12 +115,14 @@ struct ResourceGate {
     available: Condvar,
     total_cpu: u32,
     total_ram: u64,
+    total_vram: u64,
 }
 
 struct ResourcePermit {
     gate: Arc<ResourceGate>,
     cpu: u32,
     ram: u64,
+    vram: u64,
 }
 
 impl ResourceGate {
@@ -127,10 +131,12 @@ impl ResourceGate {
             state: Mutex::new(ResourceState {
                 used_cpu: 0,
                 used_ram: 0,
+                used_vram: 0,
             }),
             available: Condvar::new(),
             total_cpu: node.cpu_cores.max(1),
             total_ram: node.ram_gb,
+            total_vram: node.gpu.vram_gb,
         }
     }
 
@@ -138,27 +144,37 @@ impl ResourceGate {
         self: &Arc<Self>,
         requested_cpu: u32,
         ram: u64,
+        vram: u64,
     ) -> Option<ResourcePermit> {
         let cpu = requested_cpu.max(1);
-        if cpu > self.total_cpu || ram > self.total_ram {
+        if cpu > self.total_cpu || ram > self.total_ram || vram > self.total_vram {
             return None;
         }
 
         let mut state = self.state.lock().ok()?;
-        while state.used_cpu + cpu > self.total_cpu || state.used_ram + ram > self.total_ram {
+        while state.used_cpu + cpu > self.total_cpu
+            || state.used_ram + ram > self.total_ram
+            || state.used_vram + vram > self.total_vram
+        {
             state = self.available.wait(state).ok()?;
         }
         state.used_cpu += cpu;
         state.used_ram += ram;
+        state.used_vram += vram;
         Some(ResourcePermit {
             gate: Arc::clone(self),
             cpu,
             ram,
+            vram,
         })
     }
 
     fn acquire(self: &Arc<Self>, task: &Task) -> Option<ResourcePermit> {
-        self.acquire_requirements(task.requirements.cpu_cores, task.requirements.ram_gb)
+        self.acquire_requirements(
+            task.requirements.cpu_cores,
+            task.requirements.ram_gb,
+            task.requirements.vram_gb,
+        )
     }
 }
 
@@ -167,6 +183,7 @@ impl Drop for ResourcePermit {
         if let Ok(mut state) = self.gate.state.lock() {
             state.used_cpu = state.used_cpu.saturating_sub(self.cpu);
             state.used_ram = state.used_ram.saturating_sub(self.ram);
+            state.used_vram = state.used_vram.saturating_sub(self.vram);
             self.gate.available.notify_all();
         }
     }
@@ -188,8 +205,8 @@ pub struct WorkerExecutor {
 const MAX_ARTIFACT_SIZE: u64 = 4 * 1024 * 1024 * 1024;
 
 impl WorkerExecutor {
-    pub fn new(node: NodeInfo, core: Arc<NativeCore>) -> Self {
-        let worker_count = node.cpu_cores.max(1) as usize;
+    pub fn new(node: NodeInfo, core: Arc<NativeCore>, worker_count: usize) -> Self {
+        let worker_count = worker_count.clamp(1, node.cpu_cores.max(1) as usize);
         let queue = Arc::new(WorkQueue::new(worker_count.saturating_mul(4).max(16)));
         let gate = Arc::new(ResourceGate::new(&node));
         let active_tasks = Arc::new(AtomicU32::new(0));
@@ -377,8 +394,106 @@ impl WorkerExecutor {
             .name(format!("nodren-general-{}", task.task_id))
             .spawn(move || {
                 active.fetch_add(1, Ordering::AcqRel);
-                let _permit = gate.acquire_requirements(task.spec.cpu_cores, task.spec.ram_gb);
-                let result = process_executor::execute(task.clone(), cancelled, input_artifacts);
+                let _permit = match gate.acquire_requirements(
+                    task.spec.cpu_cores,
+                    task.spec.ram_gb,
+                    task.spec.vram_gb,
+                ) {
+                    Some(permit) => permit,
+                    None => {
+                        let result = crate::protocol::GeneralTaskResult {
+                            task_id: task.task_id,
+                            job_id: task.job_id.clone(),
+                            attempt: task.attempt,
+                            status: "FAILED".to_string(),
+                            exit_code: None,
+                            stdout: Vec::new(),
+                            stderr: Vec::new(),
+                            stdout_truncated: false,
+                            stderr_truncated: false,
+                            duration_us: 0,
+                            error_code: "resource_requirements".to_string(),
+                            error: "worker resource gate could not reserve the requested resources"
+                                .to_string(),
+                        };
+                        let write_result = encode_general_task_result(&result)
+                            .map_err(|_| io::Error::other("general task result encoding failed"))
+                            .and_then(|payload| {
+                                writer
+                                    .lock()
+                                    .map_err(|_| io::Error::other("worker writer mutex poisoned"))
+                                    .and_then(|mut writer| {
+                                        write_frame(
+                                            &mut *writer,
+                                            MessageType::TaskResult,
+                                            request_id,
+                                            &payload,
+                                        )
+                                    })
+                            });
+                        if write_result.is_err() {
+                            connection_failed.store(true, Ordering::Release);
+                        }
+                        failed.fetch_add(1, Ordering::AcqRel);
+                        active.fetch_sub(1, Ordering::AcqRel);
+                        if let Ok(mut map) = cancel_map.lock() {
+                            map.remove(&task.task_id);
+                        }
+                        return;
+                    }
+                };
+                let output_stream = if task.spec.workload_kind == "ai-llama.cpp" {
+                    let stream_writer = Arc::clone(&writer);
+                    let stream_failed = Arc::clone(&connection_failed);
+                    Some(Arc::new(move |chunk: &[u8]| {
+                        let Ok(payload) = encode_task_output(task.task_id, "stdout", false, chunk)
+                        else {
+                            stream_failed.store(true, Ordering::Release);
+                            return;
+                        };
+                        let write_result = stream_writer
+                            .lock()
+                            .map_err(|_| io::Error::other("worker writer mutex poisoned"))
+                            .and_then(|mut stream| {
+                                write_frame(
+                                    &mut *stream,
+                                    MessageType::TaskState,
+                                    task.task_id,
+                                    &payload,
+                                )
+                            });
+                        if write_result.is_err() {
+                            stream_failed.store(true, Ordering::Release);
+                        }
+                    }) as Arc<dyn Fn(&[u8]) + Send + Sync>)
+                } else {
+                    None
+                };
+                let execution = process_executor::execute(
+                    task.clone(),
+                    cancelled,
+                    input_artifacts,
+                    output_stream,
+                );
+                let mut result = execution.result;
+                let mut transfer_error = None;
+                if result.status == "COMPLETED" {
+                    for artifact in &execution.output_artifacts {
+                        if let Err(error) = send_output_artifact(&writer, task.task_id, artifact) {
+                            transfer_error = Some(error.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(error) = transfer_error {
+                    result.status = "FAILED".to_string();
+                    result.exit_code = None;
+                    result.error_code = "output_transfer_failed".to_string();
+                    result.error = error;
+                }
+                if let Some(path) = execution.cleanup_directory {
+                    let _ = fs::remove_dir_all(path);
+                }
                 record_task_outcome(&result.status, &completed, &failed);
                 let write_result = encode_general_task_result(&result)
                     .map_err(|_| io::Error::other("general task result encoding failed"))
@@ -563,6 +678,42 @@ impl WorkerExecutor {
     }
 }
 
+fn send_output_artifact(
+    writer: &Arc<Mutex<TcpStream>>,
+    task_id: u64,
+    artifact: &process_executor::ProducedArtifact,
+) -> io::Result<()> {
+    let begin = encode_artifact_begin(task_id, &artifact.spec)?;
+    writer
+        .lock()
+        .map_err(|_| io::Error::other("worker writer mutex poisoned"))
+        .and_then(|mut stream| {
+            write_frame(&mut *stream, MessageType::ArtifactBegin, task_id, &begin)
+        })?;
+    let mut file = File::open(&artifact.path)?;
+    let mut buffer = vec![0u8; 64 << 10];
+    let mut offset = 0u64;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let chunk = encode_artifact_chunk(task_id, &artifact.spec.id, offset, &buffer[..count])?;
+        writer
+            .lock()
+            .map_err(|_| io::Error::other("worker writer mutex poisoned"))
+            .and_then(|mut stream| {
+                write_frame(&mut *stream, MessageType::ArtifactChunk, task_id, &chunk)
+            })?;
+        offset += count as u64;
+    }
+    let end = encode_artifact_end(task_id, &artifact.spec.id)?;
+    writer
+        .lock()
+        .map_err(|_| io::Error::other("worker writer mutex poisoned"))
+        .and_then(|mut stream| write_frame(&mut *stream, MessageType::ArtifactEnd, task_id, &end))
+}
+
 fn record_task_outcome(status: &str, completed: &AtomicU64, failed: &AtomicU64) {
     if status == "COMPLETED" {
         completed.fetch_add(1, Ordering::AcqRel);
@@ -738,6 +889,8 @@ mod tests {
             arch: "test".to_string(),
             cpu_model: String::new(),
             cpu_cores: 2,
+            logical_cpu_cores: 2,
+            physical_cpu_cores: 2,
             ram_gb: 4,
             gpu: crate::protocol::GPUInfo {
                 vendor: String::new(),

@@ -426,7 +426,7 @@ public partial class MainViewModel : ViewModelBase
         var cpu = cluster.CpuUtilizationPercent < 0 ? "unknown" : $"{cluster.CpuUtilizationPercent:0.#}%";
         var memory = cluster.MemoryUtilizationPercent < 0 ? "unknown" : $"{cluster.MemoryUtilizationPercent:0.#}%";
         var dynamicMemory = cluster.MemoryTelemetryWorkers == 0 ? "unknown" : $"{cluster.MemoryAvailableGb} GB";
-        ResourceSummary = $"CPU usage {cpu} · RAM usage {memory} · dynamic RAM available {dynamicMemory} · scheduler capacity {cluster.AvailableCpuCores}/{cluster.TotalCpuCores} cores, {cluster.AvailableRamGb}/{cluster.TotalRamGb} GB";
+        ResourceSummary = $"CPU usage {cpu} · RAM usage {memory} · GPU usage {cluster.GpuUtilizationPercent:0.#}% · dynamic RAM available {dynamicMemory} · scheduler capacity {cluster.AvailableCpuCores}/{cluster.TotalCpuCores} cores, {cluster.AvailableRamGb}/{cluster.TotalRamGb} GB · VRAM {cluster.AvailableVramGb}/{cluster.TotalVramGb} GB";
         ActivitySummary = $"{cluster.ActiveJobs} active jobs · {cluster.QueuedJobs} queued · {cluster.ActiveTasks} active tasks · {cluster.TotalCompletedTasks} completed tasks · {cluster.TotalFailedTasks} failed tasks · throughput {cluster.ThroughputUnitsPerSecond:0.##} units/s";
         ControllerUptime = $"Controller uptime {FormatDuration(cluster.UptimeSeconds)} · telemetry from {cluster.TelemetryWorkers} worker(s)";
     }

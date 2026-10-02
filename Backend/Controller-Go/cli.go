@@ -353,6 +353,12 @@ func printTaskResult(result GeneralTaskResult) {
 	if result.StdoutTruncated || result.StderrTruncated {
 		fmt.Printf("Output       truncated (stdout=%t stderr=%t)\n", result.StdoutTruncated, result.StderrTruncated)
 	}
+	if len(result.OutputArtifacts) > 0 {
+		fmt.Println("Output artifacts:")
+		for _, artifact := range result.OutputArtifacts {
+			fmt.Printf("  %s  %s  %d bytes  sha256=%s\n", artifact.ID, artifact.Name, artifact.Size, artifact.SHA256)
+		}
+	}
 }
 
 func printJob(job Job) {
@@ -822,7 +828,25 @@ func cliDoctor() error {
 		return err
 	}
 	fmt.Printf("Nodren Doctor\n[OK] Controller: %s\n[OK] Workers: %d\n[OK] Jobs: %d\n", health.Status, len(nodes), len(jobs))
-	fmt.Println("[INFO] Native capabilities are provided by the worker release artifact.")
+	onnx, onnxCUDA, llama, llamaGPU := 0, 0, 0, 0
+	for _, node := range nodes {
+		if containsFold(node.Info.Capabilities, "onnxruntime") {
+			onnx++
+		}
+		if containsFold(node.Info.Capabilities, "onnxruntime-cuda") {
+			onnxCUDA++
+		}
+		if containsFold(node.Info.Capabilities, "llama.cpp") {
+			llama++
+		}
+		if containsFold(node.Info.Capabilities, "llama.cpp-gpu") {
+			llamaGPU++
+		}
+	}
+	fmt.Printf("[INFO] ONNX Runtime workers: %d\n[INFO] ONNX CUDA workers: %d\n[INFO] llama.cpp CPU workers: %d\n[INFO] llama.cpp GPU workers: %d\n", onnx, onnxCUDA, llama, llamaGPU)
+	for _, node := range nodes {
+		fmt.Printf("[INFO] %s runtimes: %s\n[INFO] %s capabilities: %s\n", node.Info.ID, strings.Join(node.Info.Runtimes, ","), node.Info.ID, strings.Join(node.Info.Capabilities, ","))
+	}
 	return nil
 }
 
@@ -965,7 +989,7 @@ TASKS
 AI WORKLOADS
     ai inspect <model-or-folder>
     ai plan <model-or-folder> [--workers N] [--strategy NAME]
-    ai run <model-or-folder> [--workers N] [--strategy NAME]
+    ai run <model-or-folder> [--device auto|cpu|gpu] [--cpu N] [--input FILE] [--output FILE]
     ai workers                List workers and accelerator metadata
     ai status <execution-id>  Show the distributed execution plan/status
     ai cancel <execution-id>  Cancel all ranks in an execution

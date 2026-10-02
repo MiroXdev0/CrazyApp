@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -58,27 +59,30 @@ type ResourceRequirements struct {
 }
 
 type GPUInfo struct {
-	Vendor       string   `json:"vendor"`
-	Model        string   `json:"model"`
-	VRAMGB       uint64   `json:"vram_gb"`
-	Count        uint32   `json:"count,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	Driver       string   `json:"driver,omitempty"`
-	Runtime      string   `json:"runtime,omitempty"`
+	Vendor            string   `json:"vendor"`
+	Model             string   `json:"model"`
+	VRAMGB            uint64   `json:"vram_gb"`
+	ComputeCapability string   `json:"compute_capability,omitempty"`
+	Count             uint32   `json:"count,omitempty"`
+	Capabilities      []string `json:"capabilities,omitempty"`
+	Driver            string   `json:"driver,omitempty"`
+	Runtime           string   `json:"runtime,omitempty"`
 }
 
 type NodeInfo struct {
-	ID             string   `json:"id"`
-	Hostname       string   `json:"hostname"`
-	OS             string   `json:"os"`
-	Arch           string   `json:"arch"`
-	CPUModel       string   `json:"cpu_model,omitempty"`
-	CPUCores       uint32   `json:"cpu_cores"`
-	RAMGB          uint64   `json:"ram_gb"`
-	GPU            GPUInfo  `json:"gpu"`
-	Runtimes       []string `json:"runtimes,omitempty"`
-	ExecutionTypes []string `json:"execution_types,omitempty"`
-	Capabilities   []string `json:"capabilities,omitempty"`
+	ID               string   `json:"id"`
+	Hostname         string   `json:"hostname"`
+	OS               string   `json:"os"`
+	Arch             string   `json:"arch"`
+	CPUModel         string   `json:"cpu_model,omitempty"`
+	CPUCores         uint32   `json:"cpu_cores"`
+	LogicalCPUCores  uint32   `json:"logical_cpu_cores,omitempty"`
+	PhysicalCPUCores uint32   `json:"physical_cpu_cores,omitempty"`
+	RAMGB            uint64   `json:"ram_gb"`
+	GPU              GPUInfo  `json:"gpu"`
+	Runtimes         []string `json:"runtimes,omitempty"`
+	ExecutionTypes   []string `json:"execution_types,omitempty"`
+	Capabilities     []string `json:"capabilities,omitempty"`
 }
 
 // WorkerTelemetry contains measurements reported by the worker process. A
@@ -94,6 +98,10 @@ type WorkerTelemetry struct {
 	MemoryAvailableGB        uint64    `json:"memory_available_gb"`
 	MemoryAvailableKnown     bool      `json:"memory_available_known"`
 	MemoryUtilizationPercent float64   `json:"memory_utilization_percent"`
+	GPUAvailableVRAMGB       uint64    `json:"gpu_available_vram_gb"`
+	GPUAvailableVRAMKnown    bool      `json:"gpu_available_vram_known"`
+	GPUUtilizationPercent    float64   `json:"gpu_utilization_percent"`
+	GPUUtilizationKnown      bool      `json:"gpu_utilization_known"`
 }
 
 type Task struct {
@@ -136,6 +144,13 @@ type GeneralTaskResultEnvelope struct {
 	DurationUS      uint64
 	ErrorCode       string
 	Error           string
+}
+
+type TaskOutputChunk struct {
+	TaskID uint64
+	Stream string
+	Final  bool
+	Data   []byte
 }
 
 type frame struct {
@@ -254,6 +269,20 @@ func encodeRegister(info NodeInfo) ([]byte, error) {
 	if err := writeStringArray(&b, info.GPU.Capabilities); err != nil {
 		return nil, err
 	}
+	logical := info.LogicalCPUCores
+	if logical == 0 {
+		logical = info.CPUCores
+	}
+	physical := info.PhysicalCPUCores
+	if physical == 0 {
+		physical = logical
+	}
+	if err := binary.Write(&b, binary.LittleEndian, uint64(logical)); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.LittleEndian, uint64(physical)); err != nil {
+		return nil, err
+	}
 	return b.Bytes(), nil
 }
 
@@ -327,7 +356,27 @@ func decodeRegister(data []byte) (NodeInfo, error) {
 				return NodeInfo{}, err
 			}
 			info.GPU.Capabilities = capabilities
+			for _, capability := range capabilities {
+				if strings.HasPrefix(strings.ToLower(capability), "cuda_compute_") {
+					info.GPU.ComputeCapability = strings.TrimPrefix(capability, "cuda_compute_")
+				}
+			}
 		}
+	}
+	// Topology is an optional suffix introduced after the original
+	// registration payload. Legacy workers leave these fields unset.
+	if cursor+16 <= len(data) {
+		logical := binary.LittleEndian.Uint64(data[cursor : cursor+8])
+		physical := binary.LittleEndian.Uint64(data[cursor+8 : cursor+16])
+		info.LogicalCPUCores = uint32(logical)
+		info.PhysicalCPUCores = uint32(physical)
+		cursor += 16
+	}
+	if info.LogicalCPUCores == 0 {
+		info.LogicalCPUCores = info.CPUCores
+	}
+	if info.PhysicalCPUCores == 0 {
+		info.PhysicalCPUCores = info.LogicalCPUCores
 	}
 
 	if info.ID == "" {
@@ -916,6 +965,36 @@ func decodeGeneralTaskResult(data []byte) (GeneralTaskResultEnvelope, error) {
 	return result, nil
 }
 
+func decodeTaskOutput(data []byte) (TaskOutputChunk, error) {
+	cursor := 0
+	if cursor+8 > len(data) {
+		return TaskOutputChunk{}, io.ErrUnexpectedEOF
+	}
+	taskID := binary.LittleEndian.Uint64(data[cursor : cursor+8])
+	cursor += 8
+	var err error
+	stream, err := readString(data, &cursor)
+	if err != nil {
+		return TaskOutputChunk{}, err
+	}
+	if cursor >= len(data) {
+		return TaskOutputChunk{}, io.ErrUnexpectedEOF
+	}
+	final := data[cursor] != 0
+	cursor++
+	value, err := readBytes(data, &cursor)
+	if err != nil {
+		return TaskOutputChunk{}, err
+	}
+	if cursor != len(data) {
+		return TaskOutputChunk{}, errors.New("task output trailing data")
+	}
+	if stream != "stdout" && stream != "stderr" {
+		return TaskOutputChunk{}, fmt.Errorf("unsupported task output stream %q", stream)
+	}
+	return TaskOutputChunk{TaskID: taskID, Stream: stream, Final: final, Data: value}, nil
+}
+
 func encodeHeartbeat(unixMilli int64) []byte {
 	b := make([]byte, 32)
 	binary.LittleEndian.PutUint64(b, uint64(unixMilli))
@@ -957,8 +1036,26 @@ func encodeHeartbeatTelemetryWithCounters(unixMilli int64, uptimeSeconds uint64,
 	return b
 }
 
+func encodeHeartbeatTelemetryWithCountersAndGPU(unixMilli int64, uptimeSeconds uint64, activeTasks uint32, completedTasks, failedTasks uint64, cpuPercent, memoryAvailableGB, gpuAvailableVRAMGB, gpuUtilizationPercent float64) []byte {
+	b := make([]byte, 64)
+	copy(b, encodeHeartbeatTelemetry(unixMilli, uptimeSeconds, activeTasks, cpuPercent, memoryAvailableGB))
+	binary.LittleEndian.PutUint64(b[32:40], completedTasks)
+	binary.LittleEndian.PutUint64(b[40:48], failedTasks)
+	if gpuAvailableVRAMGB < 0 {
+		binary.LittleEndian.PutUint64(b[48:56], math.MaxUint64)
+	} else {
+		binary.LittleEndian.PutUint64(b[48:56], uint64(math.Max(0, gpuAvailableVRAMGB)*1024))
+	}
+	if gpuUtilizationPercent < 0 {
+		binary.LittleEndian.PutUint32(b[56:60], math.MaxUint32)
+	} else {
+		binary.LittleEndian.PutUint32(b[56:60], uint32(math.Round(math.Max(0, math.Min(100, gpuUtilizationPercent))*1000)))
+	}
+	return b
+}
+
 func decodeHeartbeat(data []byte) (int64, WorkerTelemetry, error) {
-	if len(data) != 8 && len(data) != 32 && len(data) != 48 {
+	if len(data) != 8 && len(data) != 32 && len(data) != 48 && len(data) != 64 {
 		return 0, WorkerTelemetry{}, errors.New("invalid heartbeat payload")
 	}
 	timestamp := int64(binary.LittleEndian.Uint64(data))
@@ -966,6 +1063,7 @@ func decodeHeartbeat(data []byte) (int64, WorkerTelemetry, error) {
 		Timestamp:                time.UnixMilli(timestamp).UTC(),
 		CPUUtilizationPercent:    -1,
 		MemoryUtilizationPercent: -1,
+		GPUUtilizationPercent:    -1,
 	}
 	if len(data) == 8 {
 		return timestamp, telemetry, nil
@@ -981,9 +1079,23 @@ func decodeHeartbeat(data []byte) (int64, WorkerTelemetry, error) {
 		telemetry.MemoryAvailableGB = availableMB / 1024
 		telemetry.MemoryAvailableKnown = true
 	}
-	if len(data) == 48 {
+	if len(data) == 48 || len(data) == 64 {
 		telemetry.CompletedTasks = binary.LittleEndian.Uint64(data[32:40])
 		telemetry.FailedTasks = binary.LittleEndian.Uint64(data[40:48])
+	}
+	if len(data) == 64 {
+		availableVRAMMB := binary.LittleEndian.Uint64(data[48:56])
+		if availableVRAMMB != math.MaxUint64 {
+			telemetry.GPUAvailableVRAMGB = availableVRAMMB / 1024
+			telemetry.GPUAvailableVRAMKnown = true
+		}
+		gpuMilli := binary.LittleEndian.Uint32(data[56:60])
+		if gpuMilli != math.MaxUint32 {
+			telemetry.GPUUtilizationPercent = float64(gpuMilli) / 1000
+			telemetry.GPUUtilizationKnown = true
+		} else {
+			telemetry.GPUUtilizationPercent = -1
+		}
 	}
 	return timestamp, telemetry, nil
 }
@@ -1042,6 +1154,67 @@ func encodeArtifactEnd(taskID uint64, artifactID string) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+func decodeArtifactBegin(data []byte) (uint64, TaskArtifact, error) {
+	if len(data) < 8 {
+		return 0, TaskArtifact{}, io.ErrUnexpectedEOF
+	}
+	taskID := binary.LittleEndian.Uint64(data[:8])
+	cursor := 8
+	values := make([]string, 4)
+	var err error
+	for index := range values {
+		values[index], err = readString(data, &cursor)
+		if err != nil {
+			return 0, TaskArtifact{}, err
+		}
+	}
+	if cursor+8 != len(data) {
+		return 0, TaskArtifact{}, errors.New("invalid artifact begin payload")
+	}
+	return taskID, TaskArtifact{ID: values[0], Name: values[1], SHA256: values[2], Kind: values[3], Size: binary.LittleEndian.Uint64(data[cursor:])}, nil
+}
+
+func decodeArtifactChunk(data []byte) (uint64, string, uint64, []byte, error) {
+	if len(data) < 16 {
+		return 0, "", 0, nil, io.ErrUnexpectedEOF
+	}
+	taskID := binary.LittleEndian.Uint64(data[:8])
+	cursor := 8
+	artifactID, err := readString(data, &cursor)
+	if err != nil {
+		return 0, "", 0, nil, err
+	}
+	if cursor+8 > len(data) {
+		return 0, "", 0, nil, io.ErrUnexpectedEOF
+	}
+	offset := binary.LittleEndian.Uint64(data[cursor:])
+	cursor += 8
+	bytes, err := readBytes(data, &cursor)
+	if err != nil || cursor != len(data) {
+		if err == nil {
+			err = errors.New("invalid artifact chunk payload")
+		}
+		return 0, "", 0, nil, err
+	}
+	return taskID, artifactID, offset, bytes, nil
+}
+
+func decodeArtifactEnd(data []byte) (uint64, string, error) {
+	if len(data) < 8 {
+		return 0, "", io.ErrUnexpectedEOF
+	}
+	taskID := binary.LittleEndian.Uint64(data[:8])
+	cursor := 8
+	artifactID, err := readString(data, &cursor)
+	if err != nil {
+		return 0, "", err
+	}
+	if cursor != len(data) {
+		return 0, "", errors.New("invalid artifact end payload")
+	}
+	return taskID, artifactID, nil
 }
 
 func _mathGuard(v int) bool { return v >= 0 && v <= math.MaxInt32 }
