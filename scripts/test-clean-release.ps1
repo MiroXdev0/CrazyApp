@@ -52,17 +52,23 @@ function Task-Output([object]$Task) {
 $root = Split-Path -Parent $PSScriptRoot
 $requestedSourceRelease = $SourceRelease
 $sourceRelease = if ([string]::IsNullOrWhiteSpace($requestedSourceRelease)) { Join-Path $root "Nodren-1.0.0-windows-x64" } else { (Resolve-Path -LiteralPath $requestedSourceRelease).Path }
-$expectedArtifacts = @('NodrenApp.exe', 'nodren.exe', 'nodren-worker.exe', 'nodren-core.dll') | Sort-Object
+$runtimeArtifacts = @('NodrenApp.exe', 'nodren.exe', 'nodren-worker.exe', 'nodren-core.dll')
+$installerArtifacts = @('Install-Nodren.exe', 'Install-Nodren-Worker.exe')
+$expectedRuntimeArtifacts = $runtimeArtifacts | Sort-Object
+$expectedInstallerArtifacts = ($runtimeArtifacts + $installerArtifacts) | Sort-Object
 $actualArtifacts = @(Get-ChildItem -LiteralPath $sourceRelease -File | Select-Object -ExpandProperty Name | Sort-Object)
-$artifactDifferences = @(Compare-Object -ReferenceObject $expectedArtifacts -DifferenceObject $actualArtifacts -CaseSensitive)
+$isPortableRelease = @(Compare-Object -ReferenceObject $expectedRuntimeArtifacts -DifferenceObject $actualArtifacts -CaseSensitive).Count -eq 0
+$isInstallerRelease = @(Compare-Object -ReferenceObject $expectedInstallerArtifacts -DifferenceObject $actualArtifacts -CaseSensitive).Count -eq 0
 $releaseItems = @(Get-ChildItem -LiteralPath $sourceRelease -Force)
-if ($artifactDifferences.Count -ne 0 -or $releaseItems.Count -ne 4) {
-    throw "Release at '$sourceRelease' does not contain exactly the four required artifacts. Found: $($actualArtifacts -join ', ')"
+if ((-not $isPortableRelease -and -not $isInstallerRelease) -or $releaseItems.Count -ne $actualArtifacts.Count) {
+    throw "Release at '$sourceRelease' must contain exactly the four portable files, optionally with both installers. Found: $($actualArtifacts -join ', ')"
 }
 
 $clean = Join-Path ([System.IO.Path]::GetTempPath()) ("nodren-clean-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $clean | Out-Null
-Copy-Item -Path (Join-Path $sourceRelease "*") -Destination $clean -Force
+foreach ($name in $runtimeArtifacts) {
+    Copy-Item -LiteralPath (Join-Path $sourceRelease $name) -Destination $clean -Force
+}
 
 $appProcess = $null
 $duplicateProcess = $null
