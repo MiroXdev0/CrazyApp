@@ -75,4 +75,7 @@ nodren-state.json
 # build files
 *.obj
 *.zip
+*.exe
+*.dll
+*.tar.gz
 target/

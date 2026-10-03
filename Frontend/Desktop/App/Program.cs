@@ -20,7 +20,7 @@ internal sealed class Program
             }
             catch (Exception error)
             {
-                ShowError($"Nodren could not request application shutdown: {error.Message}");
+                Console.Error.WriteLine($"Nodren could not request application shutdown: {error.Message}");
                 Environment.ExitCode = 1;
             }
             return;
@@ -32,7 +32,7 @@ internal sealed class Program
             return;
         }
 
-        using var appMutex = new Mutex(false, @"Global\Nodren.Norden");
+        using var appMutex = new Mutex(false, @"Global\Nodren.NodrenApp");
         var ownsMutex = false;
         try
         {

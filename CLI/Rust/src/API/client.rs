@@ -14,6 +14,7 @@ use std::{
 pub struct Client {
     base_url: String,
     agent: ureq::Agent,
+    api_token: Option<String>,
 }
 
 impl Client {
@@ -35,12 +36,30 @@ impl Client {
                 .timeout_connect(Duration::from_secs(2))
                 .timeout_read(Duration::from_secs(10))
                 .timeout_write(Duration::from_secs(10))
+                .redirects(0)
                 .build(),
+            api_token: std::env::var("NODREN_API_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty()),
+        }
+    }
+
+    fn authorize(&self, request: ureq::Request) -> ureq::Request {
+        match self.api_token.as_deref() {
+            Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+            None => request,
         }
     }
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    fn ensure_bearer_transport(&self) -> Result<(), ApiError> {
+        if self.api_token.is_some() && !bearer_transport_allowed(&self.base_url) {
+            return Err(ApiError::InsecureTransport(self.base_url.clone()));
+        }
+        Ok(())
     }
 
     pub fn health(&self) -> Result<Health, ApiError> {
@@ -115,9 +134,9 @@ impl Client {
     }
 
     pub fn events(&self) -> Result<(), ApiError> {
+        self.ensure_bearer_transport()?;
         let response = self
-            .agent
-            .get(&format!("{}/v1/events", self.base_url))
+            .authorize(self.agent.get(&format!("{}/v1/events", self.base_url)))
             .call()
             .map_err(|error| self.map_error(error))?;
         for line in BufReader::new(response.into_reader()).lines() {
@@ -200,10 +219,10 @@ impl Client {
     }
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        self.ensure_bearer_transport()?;
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .agent
-            .get(&url)
+            .authorize(self.agent.get(&url))
             .call()
             .map_err(|error| self.map_error(error))?;
         let body = response
@@ -217,10 +236,10 @@ impl Client {
         path: &str,
         payload: &T,
     ) -> Result<R, ApiError> {
+        self.ensure_bearer_transport()?;
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .agent
-            .post(&url)
+            .authorize(self.agent.post(&url))
             .set("Content-Type", "application/json")
             .send_string(
                 &serde_json::to_string(payload)
@@ -234,10 +253,10 @@ impl Client {
     }
 
     fn post_empty<R: DeserializeOwned>(&self, path: &str) -> Result<R, ApiError> {
+        self.ensure_bearer_transport()?;
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .agent
-            .post(&url)
+            .authorize(self.agent.post(&url))
             .call()
             .map_err(|error| self.map_error(error))?;
         let body = response
@@ -251,10 +270,10 @@ impl Client {
         path: &str,
         payload: &T,
     ) -> Result<R, ApiError> {
+        self.ensure_bearer_transport()?;
         let url = format!("{}{}", self.base_url, path);
         let response = self
-            .agent
-            .put(&url)
+            .authorize(self.agent.put(&url))
             .set("Content-Type", "application/json")
             .send_string(
                 &serde_json::to_string(payload)
@@ -304,6 +323,35 @@ impl Client {
     }
 }
 
+fn bearer_transport_allowed(base_url: &str) -> bool {
+    if base_url
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+    {
+        return true;
+    }
+    let Some(authority) = base_url
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
+        .and_then(|_| base_url.get(7..))
+    else {
+        return false;
+    };
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = if let Some(bracketed) = authority.strip_prefix('[') {
+        bracketed.split_once(']').map_or("", |(address, _)| address)
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +366,37 @@ mod tests {
             Client::new("http://localhost:8080").base_url(),
             "http://localhost:8080"
         );
+    }
+
+    #[test]
+    fn permits_bearer_tokens_only_over_https_or_loopback_http() {
+        for (address, expected) in [
+            ("https://controller.example:8080", true),
+            ("http://localhost:8080", true),
+            ("http://127.0.0.1:8080", true),
+            ("http://[::1]:8080", true),
+            ("http://controller.example:8080", false),
+        ] {
+            assert_eq!(
+                bearer_transport_allowed(address),
+                expected,
+                "unexpected transport policy for {address}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_to_send_api_tokens_to_remote_http_controllers() {
+        let mut client = Client::new("http://controller.example:8080");
+        client.api_token = Some("test-token".to_string());
+        assert!(matches!(
+            client.ensure_bearer_transport(),
+            Err(ApiError::InsecureTransport(_))
+        ));
+
+        client.base_url = "http://127.0.0.1:8080".to_string();
+        assert!(client.ensure_bearer_transport().is_ok());
+        client.base_url = "https://controller.example:8080".to_string();
+        assert!(client.ensure_bearer_transport().is_ok());
     }
 }

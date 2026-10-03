@@ -3,6 +3,8 @@ using System.Text;
 using App.API;
 using App.Models;
 using App.Services;
+using Avalonia;
+using Avalonia.Styling;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
@@ -18,6 +20,8 @@ public partial class MainViewModel : ViewModelBase
     {
         _settings = NodrenSettingsStore.Load();
         _controllerUrl = _settings.ControllerUrl;
+        _isDarkTheme = _settings.IsDarkTheme;
+        ApplyTheme();
         _api = new NodrenApiClient(_controllerUrl);
         _ = SynchronizationLoopAsync();
     }
@@ -29,6 +33,11 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     private string _controllerUrl;
+
+    [ObservableProperty]
+    private bool _isDarkTheme;
+
+    public string ThemeToggleLabel => IsDarkTheme ? "Use light theme" : "Use dark theme";
 
     [ObservableProperty]
     private string _controllerStatus = "○ Controller Offline";
@@ -116,6 +125,35 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     private string _distributionSummary = "Automatic distribution is selected.";
+
+    [RelayCommand]
+    private void ToggleTheme() => IsDarkTheme = !IsDarkTheme;
+
+    partial void OnIsDarkThemeChanged(bool value)
+    {
+        ApplyTheme();
+        OnPropertyChanged(nameof(ThemeToggleLabel));
+
+        _settings.IsDarkTheme = value;
+        try
+        {
+            NodrenSettingsStore.Save(_settings);
+            ErrorMessage = string.Empty;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            ErrorMessage = $"Theme changed, but the preference could not be saved: {exception.Message}";
+        }
+    }
+
+    private void ApplyTheme()
+    {
+        var application = Application.Current;
+        if (application is not null)
+        {
+            application.RequestedThemeVariant = IsDarkTheme ? ThemeVariant.Dark : ThemeVariant.Light;
+        }
+    }
 
     [RelayCommand]
     private async Task RefreshAsync()

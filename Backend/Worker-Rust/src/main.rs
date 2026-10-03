@@ -1,3 +1,4 @@
+mod auth;
 mod executor;
 mod hashing;
 mod llama_cpp;
@@ -8,10 +9,10 @@ mod protocol;
 use executor::WorkerExecutor;
 use native_core::NativeCore;
 use protocol::{
-    Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult, decode_artifact_begin,
-    decode_artifact_chunk, decode_artifact_end, decode_general_task, decode_task_batch,
-    encode_heartbeat, encode_heartbeat_with_counters_and_gpu, encode_register, encode_register_ack,
-    read_frame, write_frame,
+    AuthenticatedWriter, Frame, GPUInfo, MessageType, NodeInfo, Task, TaskResult,
+    decode_artifact_begin, decode_artifact_chunk, decode_artifact_end, decode_general_task,
+    decode_task_batch, encode_heartbeat, encode_heartbeat_with_counters_and_gpu, encode_register,
+    encode_register_ack, put_string, read_frame, write_frame,
 };
 
 #[cfg(target_os = "linux")]
@@ -33,6 +34,8 @@ use std::{
 struct WorkerConfig {
     controller: String,
     id: String,
+    auth_mode: String,
+    auth_token: Option<String>,
     cpu_override: Option<u32>,
     worker_concurrency_override: Option<u32>,
     gpu_vendor: String,
@@ -314,6 +317,10 @@ fn build_config() -> WorkerConfig {
         id: arg_value("--id")
             .or_else(|| env::var("NODREN_WORKER_ID").ok())
             .unwrap_or(default_id),
+        auth_mode: env::var("NODREN_AUTH_MODE").unwrap_or_else(|_| "secure".to_string()),
+        auth_token: env::var("NODREN_WORKER_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty()),
         cpu_override: arg_value("--cpu-cores").and_then(|v| v.parse().ok()),
         worker_concurrency_override: arg_value("--worker-concurrency")
             .or_else(|| env::var("NODREN_WORKER_CONCURRENCY").ok())
@@ -710,7 +717,7 @@ fn native_error_category(code: i32) -> &'static str {
     }
 }
 
-fn connect(config: &WorkerConfig) -> io::Result<TcpStream> {
+fn connect(config: &WorkerConfig) -> io::Result<(TcpStream, Option<[u8; 32]>)> {
     let addr = config.controller.to_socket_addrs()?.next().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -720,7 +727,59 @@ fn connect(config: &WorkerConfig) -> io::Result<TcpStream> {
 
     let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
     stream.set_nodelay(true)?;
-    Ok(stream)
+    match config.auth_mode.as_str() {
+        "development" => Ok((stream, None)),
+        "secure" => {
+            let secret = config.auth_token.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "secure mode requires NODREN_WORKER_TOKEN",
+                )
+            })?;
+            if secret.len() < 32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "NODREN_WORKER_TOKEN must contain at least 32 characters",
+                ));
+            }
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            let mut reader = stream.try_clone()?;
+            let challenge = read_frame(&mut reader)?;
+            if challenge.typ != MessageType::AuthChallenge
+                || challenge.request_id != 0
+                || challenge.payload.len() != 32
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Controller did not provide a valid authentication challenge",
+                ));
+            }
+            let nonce = challenge.payload;
+            let proof = crate::auth::worker_proof(secret.as_bytes(), &nonce, &config.id)?;
+            let mut response = Vec::with_capacity(config.id.len() + proof.len() + 4);
+            put_string(&mut response, &config.id)?;
+            response.extend_from_slice(&proof);
+            let mut writer = stream.try_clone()?;
+            write_frame(&mut writer, MessageType::AuthResponse, 0, &response)?;
+            let result = read_frame(&mut reader)?;
+            if result.typ != MessageType::AuthResult || result.request_id != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Controller authentication failed",
+                ));
+            }
+            let key = crate::auth::session_key(secret.as_bytes(), &nonce, &config.id)?;
+            crate::auth::verify_controller_proof(&key, &nonce, &config.id, &result.payload)?;
+            stream.set_read_timeout(None)?;
+            stream.set_write_timeout(None)?;
+            Ok((stream, Some(key)))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "NODREN_AUTH_MODE must be either secure or development",
+        )),
+    }
 }
 
 fn run_connection(
@@ -734,14 +793,18 @@ fn run_connection(
         "[nodren-worker] connecting controller={}",
         config.controller
     );
-    let stream = connect(config)?;
+    let (stream, session_key) = connect(config)?;
     stream.set_read_timeout(Some(Duration::from_secs(1)))?;
     println!("[nodren-worker] connected");
     if reconnected {
         println!("[nodren-worker] reconnected");
     }
 
-    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let writer = Arc::new(Mutex::new(AuthenticatedWriter::new(
+        stream.try_clone()?,
+        session_key,
+    )));
+    let mut receive_sequence = 0u64;
     let stop_heartbeat = Arc::new(AtomicBool::new(false));
     let connection_failed = Arc::new(AtomicBool::new(false));
     let heartbeat_writer = Arc::clone(&writer);
@@ -786,13 +849,9 @@ fn run_connection(
                 Ok(stream) => stream,
                 Err(_) => return,
             };
-            if write_frame(
-                &mut *stream,
-                MessageType::Heartbeat,
-                now_millis() as u64,
-                &payload,
-            )
-            .is_err()
+            if stream
+                .write_frame(MessageType::Heartbeat, now_millis() as u64, &payload)
+                .is_err()
             {
                 heartbeat_error.store(true, Ordering::Release);
                 return;
@@ -805,12 +864,16 @@ fn run_connection(
         let mut writer_stream = writer
             .lock()
             .map_err(|_| io::Error::other("writer mutex poisoned"))?;
-        write_frame(&mut *writer_stream, MessageType::Register, 1, &payload)?;
+        writer_stream.write_frame(MessageType::Register, 1, &payload)?;
         drop(writer_stream);
 
         let mut reader = stream;
         loop {
-            let frame = match read_frame(&mut reader) {
+            let frame = match crate::auth::read_session_frame(
+                &mut reader,
+                session_key.as_ref(),
+                &mut receive_sequence,
+            ) {
                 Ok(frame) => frame,
                 Err(error)
                     if matches!(
@@ -840,14 +903,13 @@ fn run_connection(
                     println!("[nodren-worker] registered");
                     let mut stream = writer.lock().unwrap();
                     let payload = encode_register_ack("ready")?;
-                    write_frame(&mut *stream, MessageType::Ready, request_id, &payload)?;
+                    stream.write_frame(MessageType::Ready, request_id, &payload)?;
                     println!("[nodren-worker] ready");
                 }
                 MessageType::HeartbeatAck => {}
                 MessageType::Heartbeat => {
                     let mut stream = writer.lock().unwrap();
-                    write_frame(
-                        &mut *stream,
+                    stream.write_frame(
                         MessageType::HeartbeatAck,
                         request_id,
                         &encode_heartbeat(now_millis(), 0, 0, None, None),
@@ -906,7 +968,10 @@ fn run_connection(
                 | MessageType::TaskAck
                 | MessageType::TaskState
                 | MessageType::TaskResult
-                | MessageType::Capabilities => {}
+                | MessageType::Capabilities
+                | MessageType::AuthChallenge
+                | MessageType::AuthResponse
+                | MessageType::AuthResult => {}
             }
         }
     })();

@@ -13,15 +13,24 @@ $cliPath = Join-Path $ReleaseDirectory "nodren.exe"
 if (-not (Test-Path -LiteralPath $workerPath) -or -not (Test-Path -LiteralPath $cliPath)) {
     throw "Build the release directory before running this test"
 }
+if ([string]::IsNullOrWhiteSpace($env:NODREN_API_TOKEN) -or [string]::IsNullOrWhiteSpace($env:NODREN_WORKER_TOKEN)) {
+    throw "Set NODREN_API_TOKEN and NODREN_WORKER_TOKEN for the secure remote integration test"
+}
+$httpUri = [Uri]$HttpController
+if ($httpUri.Scheme -ne "https") {
+    throw "Secure remote API access requires an HTTPS URL"
+}
 
 $env:NODREN_CONTROLLER_URL = $HttpController.TrimEnd("/")
+$env:NODREN_AUTH_MODE = "secure"
 $worker = $null
+$apiHeaders = @{ Authorization = "Bearer $env:NODREN_API_TOKEN" }
 
 function Wait-WorkerState([string]$ExpectedState, [int]$Seconds = 30) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $nodes = @(Invoke-RestMethod "$env:NODREN_CONTROLLER_URL/v1/nodes")
+            $nodes = @(Invoke-RestMethod "$env:NODREN_CONTROLLER_URL/v1/nodes" -Headers $apiHeaders)
             $node = $nodes | Where-Object { $_.info.id -eq $WorkerId }
             if ($null -ne $node -and $node.state -eq $ExpectedState) {
                 return

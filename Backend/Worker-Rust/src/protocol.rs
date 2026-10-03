@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::net::TcpStream;
 
 // Little-endian encoding of the ASCII bytes "NDRN".
 pub const MAGIC: u32 = 0x4E52444E;
@@ -29,6 +30,9 @@ pub enum MessageType {
     ArtifactChunk = 17,
     ArtifactEnd = 18,
     Capabilities = 19,
+    AuthChallenge = 20,
+    AuthResponse = 21,
+    AuthResult = 22,
 }
 
 impl TryFrom<u16> for MessageType {
@@ -55,6 +59,9 @@ impl TryFrom<u16> for MessageType {
             17 => Ok(Self::ArtifactChunk),
             18 => Ok(Self::ArtifactEnd),
             19 => Ok(Self::Capabilities),
+            20 => Ok(Self::AuthChallenge),
+            21 => Ok(Self::AuthResponse),
+            22 => Ok(Self::AuthResult),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unknown message type",
@@ -67,6 +74,45 @@ pub struct Frame {
     pub typ: MessageType,
     pub request_id: u64,
     pub payload: Vec<u8>,
+}
+
+pub struct AuthenticatedWriter {
+    stream: TcpStream,
+    key: Option<[u8; 32]>,
+    sequence: u64,
+}
+
+impl AuthenticatedWriter {
+    pub fn new(stream: TcpStream, key: Option<[u8; 32]>) -> Self {
+        Self {
+            stream,
+            key,
+            sequence: 0,
+        }
+    }
+
+    pub fn write_frame(
+        &mut self,
+        typ: MessageType,
+        request_id: u64,
+        payload: &[u8],
+    ) -> io::Result<()> {
+        if let Some(key) = self.key.as_ref() {
+            let sequence = self.sequence.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "authenticated frame sequence exhausted",
+                )
+            })?;
+            let protected =
+                crate::auth::protect_frame(key, b'W', typ as u16, request_id, sequence, payload)?;
+            write_frame(&mut self.stream, typ, request_id, &protected)?;
+            self.sequence = sequence;
+            Ok(())
+        } else {
+            write_frame(&mut self.stream, typ, request_id, payload)
+        }
+    }
 }
 
 fn put_u32(out: &mut Vec<u8>, v: u32) {

@@ -45,6 +45,9 @@ const (
 	MsgArtifactChunk
 	MsgArtifactEnd
 	MsgCapabilities
+	MsgAuthChallenge
+	MsgAuthResponse
+	MsgAuthResult
 )
 
 type ResourceRequirements struct {

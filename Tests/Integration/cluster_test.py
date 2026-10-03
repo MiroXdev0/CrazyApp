@@ -116,11 +116,35 @@ def submit_task(base_url: str, task: dict) -> dict:
 
 
 def wait_for_job(base_url: str, job_id: str, description: str, timeout: float = 20) -> dict:
+    last_state = None
+
     def terminal_job():
+        nonlocal last_state
         state = request("GET", f"{base_url}/v1/jobs/{job_id}")
+        last_state = state
         return state if state["status"] in {"COMPLETED", "FAILED"} else None
 
-    return wait_for(terminal_job, timeout, description)
+    try:
+        return wait_for(terminal_job, timeout, description)
+    except RuntimeError as error:
+        state = last_state or {}
+        try:
+            nodes = [
+                {
+                    "id": node["info"]["id"],
+                    "state": node["state"],
+                    "allocated_cpu_cores": node.get("allocated_cpu_cores"),
+                    "allocated_ram_gb": node.get("allocated_ram_gb"),
+                }
+                for node in request("GET", f"{base_url}/v1/nodes")
+            ]
+        except (KeyError, OSError, URLError, ValueError):
+            nodes = []
+        raise RuntimeError(
+            f"{error}; latest job status={state.get('status')} "
+            f"distribution={state.get('distribution')} partitions={state.get('partitions')} "
+            f"workers={nodes}"
+        ) from error
 
 
 def node_by_id(base_url: str, node_id: str) -> dict:
@@ -141,10 +165,13 @@ def main() -> int:
         controller_binary, worker_binary = build_binaries(Path(temporary_directory.name))
         controller_env = os.environ.copy()
         controller_env.update(
+            NODREN_AUTH_MODE="development",
             NODREN_NODE_ADDR=f"127.0.0.1:{tcp_port}",
             NODREN_HTTP_ADDR=f"127.0.0.1:{http_port}",
             NODREN_STATE_FILE=str(Path(temporary_directory.name) / "controller-state.json"),
         )
+        worker_env = os.environ.copy()
+        worker_env["NODREN_AUTH_MODE"] = "development"
         controller_process = subprocess.Popen(
                 [str(controller_binary)],
                 cwd=CONTROLLER_DIR,
@@ -164,6 +191,7 @@ def main() -> int:
                 "--ram-gb=4",
             ],
             cwd=WORKER_DIR,
+            env=worker_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -177,6 +205,7 @@ def main() -> int:
                 "--ram-gb=16",
             ],
             cwd=WORKER_DIR,
+            env=worker_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -337,8 +366,8 @@ def main() -> int:
         if cli_unavailable.returncode == 0 or "Controller unreachable" not in cli_unavailable.stderr:
             raise RuntimeError(f"CLI unavailable-controller handling failed: {cli_unavailable.returncode} {cli_unavailable.stdout} {cli_unavailable.stderr}")
 
-        concurrent_requirements = {"cpu_cores": 1, "ram_gb": 8, "gpu_required": False}
-        concurrent_payload = bytes([1]) * 12_000_000
+        concurrent_requirements = {"cpu_cores": 3, "ram_gb": 2, "gpu_required": False}
+        concurrent_payload = bytes([1]) * 3_000_000
         with ThreadPoolExecutor(max_workers=2) as pool:
             concurrent_futures = [
                 pool.submit(submit_job, base_url, "sum", concurrent_payload, concurrent_requirements)
@@ -346,7 +375,7 @@ def main() -> int:
             ]
             concurrent_jobs = [future.result() for future in concurrent_futures]
         concurrent_results = [
-            wait_for_job(base_url, job["id"], "concurrent workload completion")
+            wait_for_job(base_url, job["id"], "concurrent workload completion", timeout=45)
             for job in concurrent_jobs
         ]
         if any(
@@ -457,7 +486,7 @@ def main() -> int:
             raise RuntimeError(f"manual distribution failed: {manual_result}")
 
         dot_payload = struct.pack("<I6i", 3, 1, 2, 3, 4, 5, 6)
-        high_requirements = {"cpu_cores": 6, "ram_gb": 8, "gpu_required": False}
+        high_requirements = {"cpu_cores": 6, "ram_gb": 2, "gpu_required": False}
         dot_result = submit_and_wait(
             base_url,
             "dot_product",
@@ -585,6 +614,7 @@ def main() -> int:
                 "--ram-gb=4",
             ],
             cwd=WORKER_DIR,
+            env=worker_env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

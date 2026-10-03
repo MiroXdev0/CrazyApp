@@ -35,7 +35,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
     go build -trimpath -ldflags '-s -w' -o "$RELEASE/nodren" "$ROOT/Backend/Controller-Go"
 
 echo "[4/7] Publishing Linux Avalonia UI"
-UI_PUBLISH="$ROOT/.artifacts/nodren-ui-linux-x64"
+UI_PUBLISH="$ROOT/.artifacts/nodren-app-linux-x64"
 rm -rf "$UI_PUBLISH"
 dotnet publish "$ROOT/Frontend/Desktop/App/App.csproj" \
     --configuration Release \
@@ -49,7 +49,7 @@ find "$UI_PUBLISH" -maxdepth 1 -type f ! -name '*.pdb' ! -name '*.xml' -exec cp 
 rm -rf "$UI_PUBLISH"
 
 echo "[5/7] Validating Linux release binaries"
-for artifact in nodren nodren-worker nodren-ui libnodren_core.so; do
+for artifact in nodren nodren-worker NodrenApp libnodren_core.so; do
     if [[ ! -f "$RELEASE/$artifact" ]]; then
         echo "Missing release artifact: $artifact" >&2
         exit 1
@@ -59,8 +59,8 @@ if find "$RELEASE" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dll' \) | gr
     echo "Windows artifact found in Linux release" >&2
     exit 1
 fi
-file "$RELEASE/nodren" "$RELEASE/nodren-worker" "$RELEASE/nodren-ui" "$RELEASE/libnodren_core.so"
-for binary in nodren nodren-worker nodren-ui; do
+file "$RELEASE/nodren" "$RELEASE/nodren-worker" "$RELEASE/NodrenApp" "$RELEASE/libnodren_core.so"
+for binary in nodren nodren-worker NodrenApp; do
     if ! file "$RELEASE/$binary" | grep -q 'ELF 64-bit.*x86-64'; then
         echo "Not an x86-64 ELF binary: $RELEASE/$binary" >&2
         exit 1
@@ -78,7 +78,7 @@ for symbol in nodren_core_create nodren_core_initialize nodren_core_destroy nodr
 done
 
 echo "[6/7] Verifying worker finds the adjacent native Core"
-chmod +x "$RELEASE/nodren" "$RELEASE/nodren-worker" "$RELEASE/nodren-ui"
+chmod +x "$RELEASE/nodren" "$RELEASE/nodren-worker" "$RELEASE/NodrenApp"
 set +e
 timeout 3s "$RELEASE/nodren-worker" --controller 127.0.0.1:1 >"$RELEASE/worker-load-test.out" 2>&1
 worker_status=$?

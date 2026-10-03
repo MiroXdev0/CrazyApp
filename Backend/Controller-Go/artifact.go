@@ -16,6 +16,7 @@ import (
 )
 
 const maxArtifactSize = uint64(4 << 30)
+const maxArtifactIDLength = 128
 
 // ArtifactRecord is metadata only. Bytes live in the controller artifact store,
 // keeping large files out of the main JSON state snapshot.
@@ -40,8 +41,36 @@ func (c *Controller) artifactStoreDir() string {
 	return filepath.Join(os.TempDir(), "nodren-artifacts")
 }
 
-func (c *Controller) artifactPath(id string) string {
-	return filepath.Join(c.artifactStoreDir(), id+".bin")
+func safeArtifactID(id string) bool {
+	if id == "" || len(id) > maxArtifactIDLength {
+		return false
+	}
+	for index, value := range id {
+		if (value >= 'a' && value <= 'z') ||
+			(value >= 'A' && value <= 'Z') ||
+			(value >= '0' && value <= '9') ||
+			(index > 0 && (value == '-' || value == '_')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (c *Controller) artifactPath(id string) (string, error) {
+	if !safeArtifactID(id) {
+		return "", errors.New("invalid artifact ID")
+	}
+	root, err := filepath.Abs(c.artifactStoreDir())
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, id+".bin")
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return "", errors.New("artifact path is outside the artifact store")
+	}
+	return path, nil
 }
 
 func (c *Controller) handleArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +163,11 @@ func (c *Controller) handleArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	c.mu.Unlock()
 	id := fmt.Sprintf("ART-%06d", atomic.AddUint64(&c.nextArtifact, 1))
-	finalPath := c.artifactPath(id)
+	finalPath, err := c.artifactPath(id)
+	if err != nil {
+		http.Error(w, "artifact storage unavailable", http.StatusInternalServerError)
+		return
+	}
 	if err := os.Rename(temporaryName, finalPath); err != nil {
 		http.Error(w, "artifact storage unavailable", http.StatusInternalServerError)
 		return
@@ -151,10 +184,20 @@ func safeArtifactName(name string) bool {
 	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
 		return false
 	}
+	if strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") {
+		return false
+	}
 	for _, value := range name {
-		if value == 0 || value == '/' || value == '\\' || value == '"' || value == '\r' || value == '\n' || value < 0x20 {
+		if value == 0 || strings.ContainsRune(`<>:"/\|?*`, value) || value < 0x20 {
 			return false
 		}
+	}
+	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" {
+		return false
+	}
+	if len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && stem[3] >= '1' && stem[3] <= '9' {
+		return false
 	}
 	return true
 }
@@ -167,6 +210,10 @@ func (c *Controller) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
+	if !safeArtifactID(id) {
+		http.NotFound(w, r)
+		return
+	}
 	c.mu.RLock()
 	record, ok := c.artifacts[id]
 	if ok {
@@ -186,7 +233,12 @@ func (c *Controller) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	file, err := os.Open(c.artifactPath(id))
+	path, err := c.artifactPath(id)
+	if err != nil {
+		http.Error(w, "artifact storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
@@ -220,7 +272,7 @@ func (c *Controller) beginWorkerArtifact(nodeID string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if spec.ID == "" || !safeArtifactName(spec.Name) || spec.Size > maxArtifactSize {
+	if !safeArtifactID(spec.ID) || !safeArtifactName(spec.Name) || spec.Size > maxArtifactSize {
 		return errors.New("invalid worker output artifact metadata")
 	}
 	c.mu.Lock()
@@ -330,7 +382,11 @@ func (c *Controller) finishWorkerArtifact(nodeID string, data []byte) error {
 		_ = os.Remove(upload.path)
 		return errors.New("worker output artifact checksum mismatch")
 	}
-	finalPath := c.artifactPath(upload.spec.ID)
+	finalPath, err := c.artifactPath(upload.spec.ID)
+	if err != nil {
+		_ = os.Remove(upload.path)
+		return err
+	}
 	if err := os.Rename(upload.path, finalPath); err != nil {
 		_ = os.Remove(upload.path)
 		return err

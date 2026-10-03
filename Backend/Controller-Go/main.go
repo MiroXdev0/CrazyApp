@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -317,11 +318,16 @@ type clusterStatusResponse struct {
 }
 
 type session struct {
-	conn     net.Conn
-	send     chan []byte
-	done     chan struct{}
-	closeOne sync.Once
-	nodeID   string
+	conn                  net.Conn
+	send                  chan []byte
+	done                  chan struct{}
+	closeOne              sync.Once
+	nodeID                string
+	authenticatedWorkerID string
+	authKey               []byte
+	authSendMu            sync.Mutex
+	authSendSequence      uint64
+	authReceiveSequence   uint64
 }
 
 type workerArtifactUpload struct {
@@ -344,9 +350,18 @@ func (s *session) enqueue(typ MessageType, requestID uint64, payload []byte) err
 	if typ == 0 {
 		return errors.New("invalid message type")
 	}
+	s.authSendMu.Lock()
+	defer s.authSendMu.Unlock()
+	nextSequence := s.authSendSequence + 1
+	if len(s.authKey) != 0 {
+		payload = protectFramePayload(s.authKey, 'C', typ, requestID, nextSequence, payload)
+	}
 	buf := encodeSessionFrame(typ, requestID, payload)
 	select {
 	case s.send <- buf:
+		if len(s.authKey) != 0 {
+			s.authSendSequence = nextSequence
+		}
 		return nil
 	case <-s.done:
 		return errors.New("session closed")
@@ -362,9 +377,18 @@ func (s *session) enqueueBlocking(typ MessageType, requestID uint64, payload []b
 	if typ == 0 {
 		return errors.New("invalid message type")
 	}
+	s.authSendMu.Lock()
+	defer s.authSendMu.Unlock()
+	nextSequence := s.authSendSequence + 1
+	if len(s.authKey) != 0 {
+		payload = protectFramePayload(s.authKey, 'C', typ, requestID, nextSequence, payload)
+	}
 	buf := encodeSessionFrame(typ, requestID, payload)
 	select {
 	case s.send <- buf:
+		if len(s.authKey) != 0 {
+			s.authSendSequence = nextSequence
+		}
 		return nil
 	case <-s.done:
 		return errors.New("session closed")
@@ -432,6 +456,11 @@ type Controller struct {
 	lastTelemetryEvent map[string]time.Time
 	statePath          string
 	shutdownToken      string
+	apiToken           string
+	workerTokens       map[string]string
+	authMode           string
+	httpCertFile       string
+	httpKeyFile        string
 	shutdown           func()
 
 	tcpAddr   string
@@ -457,6 +486,7 @@ func NewController(tcpAddr, httpAddr string) *Controller {
 		lastTelemetryEvent: make(map[string]time.Time),
 		tcpAddr:            tcpAddr,
 		httpAddr:           httpAddr,
+		authMode:           "development",
 		startedAt:          time.Now().UTC(),
 	}
 }
@@ -531,7 +561,13 @@ func (c *Controller) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		var err error
+		if c.httpCertFile != "" && c.httpKeyFile != "" {
+			err = httpServer.ListenAndServeTLS(c.httpCertFile, c.httpKeyFile)
+		} else {
+			err = httpServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("http server: %v", err)
 		}
 	}()
@@ -575,6 +611,15 @@ func (c *Controller) Start(ctx context.Context) error {
 
 func (c *Controller) handleSession(s *session) {
 	defer s.close()
+	if c.authMode == "secure" {
+		workerID, key, err := authenticateWorker(s.conn, c.workerTokens)
+		if err != nil {
+			log.Printf("worker authentication rejected remote=%s", s.conn.RemoteAddr())
+			return
+		}
+		s.authenticatedWorkerID = workerID
+		s.authKey = key
+	}
 
 	go func() {
 		for {
@@ -597,12 +642,26 @@ func (c *Controller) handleSession(s *session) {
 			c.handleDisconnect(s)
 			return
 		}
+		if len(s.authKey) != 0 {
+			payload, verifyErr := verifyFramePayload(s.authKey, 'W', f.Type, f.RequestID, s.authReceiveSequence+1, f.Payload)
+			if verifyErr != nil {
+				log.Printf("authenticated Worker frame rejected id=%s", s.authenticatedWorkerID)
+				c.handleDisconnect(s)
+				return
+			}
+			s.authReceiveSequence++
+			f.Payload = payload
+		}
 
 		switch f.Type {
 		case MsgRegister:
 			info, err := decodeRegister(f.Payload)
 			if err != nil {
 				_ = s.enqueue(MsgError, f.RequestID, encodeError(err.Error()))
+				return
+			}
+			if len(s.authKey) != 0 && info.ID != s.authenticatedWorkerID {
+				log.Printf("authenticated Worker ID mismatch id=%s", s.authenticatedWorkerID)
 				return
 			}
 			now := time.Now()
@@ -1791,7 +1850,11 @@ func (c *Controller) enqueueInputArtifactsLocked(sess *session, taskID uint64, a
 		if record == nil {
 			return fmt.Errorf("input artifact %s was not found", requested.ID)
 		}
-		file, err := os.Open(c.artifactPath(record.ID))
+		path, pathErr := c.artifactPath(record.ID)
+		if pathErr != nil {
+			return pathErr
+		}
+		file, err := os.Open(path)
 		if err != nil {
 			return fmt.Errorf("open input artifact %s: %w", record.ID, err)
 		}
@@ -2451,7 +2514,91 @@ func (c *Controller) routes() http.Handler {
 	mux.HandleFunc("/v1/ai/inspect", c.handleAIInspect)
 	mux.HandleFunc("/v1/artifacts", c.handleArtifacts)
 	mux.HandleFunc("/v1/artifacts/", c.handleArtifact)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && r.URL.Path != "/internal/shutdown" {
+			if c.authMode == "development" {
+				if !isLoopbackAddress(r.RemoteAddr) {
+					http.Error(w, "Controller API is restricted to loopback in development mode", http.StatusForbidden)
+					return
+				}
+			} else if !authorizedBearer(r.Header.Get("Authorization"), c.apiToken) {
+				w.Header().Set("WWW-Authenticate", `Bearer`)
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+			if r.URL.Path == "/v1/artifacts" && r.Method == http.MethodPost {
+				if r.ContentLength > int64(maxArtifactSize) {
+					http.Error(w, "artifact exceeds 4 GiB limit", http.StatusRequestEntityTooLarge)
+					return
+				}
+			} else {
+				if r.ContentLength > 16<<20 {
+					http.Error(w, "request body exceeds 16 MiB limit", http.StatusRequestEntityTooLarge)
+					return
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, 16<<20)
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func authorizedBearer(header, expected string) bool {
+	if expected == "" {
+		return false
+	}
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	provided := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	return len(provided) == len(expected) &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func isLoopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isLoopbackBind(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return false
+	}
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+}
+
+func validateControllerSecurity(mode, apiToken string, workerTokens map[string]string, httpAddr, tcpAddr, certFile, keyFile string) error {
+	switch mode {
+	case "development":
+		if !isLoopbackBind(httpAddr) || !isLoopbackBind(tcpAddr) {
+			return errors.New("development authentication mode requires loopback-only HTTP and Worker listeners")
+		}
+	case "secure":
+		if len(apiToken) < 32 {
+			return errors.New("secure mode requires NODREN_API_TOKEN of at least 32 characters")
+		}
+		if err := validateWorkerTokens(workerTokens); err != nil {
+			return err
+		}
+		if certFile == "" || keyFile == "" {
+			return errors.New("secure mode requires NODREN_HTTP_CERT_FILE and NODREN_HTTP_KEY_FILE for HTTPS")
+		}
+		if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+			return fmt.Errorf("load Controller HTTPS certificate: %w", err)
+		}
+	default:
+		return errors.New("NODREN_AUTH_MODE must be either secure or development")
+	}
+	return nil
 }
 
 func (c *Controller) handleShutdown(w http.ResponseWriter, r *http.Request) {
@@ -3173,11 +3320,23 @@ func serveController() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	tcpAddr := getenv("NODREN_NODE_ADDR", ":9000")
-	httpAddr := getenv("NODREN_HTTP_ADDR", ":8080")
+	tcpAddr := getenv("NODREN_NODE_ADDR", "127.0.0.1:9000")
+	httpAddr := getenv("NODREN_HTTP_ADDR", "127.0.0.1:8080")
 
 	controller := NewController(tcpAddr, httpAddr)
 	controller.statePath = getenv("NODREN_STATE_FILE", "nodren-state.json")
+	controller.authMode = getenv("NODREN_AUTH_MODE", "secure")
+	controller.apiToken = strings.TrimSpace(os.Getenv("NODREN_API_TOKEN"))
+	if rawTokens := strings.TrimSpace(os.Getenv("NODREN_WORKER_TOKENS")); rawTokens != "" {
+		if err := json.Unmarshal([]byte(rawTokens), &controller.workerTokens); err != nil {
+			log.Fatal("NODREN_WORKER_TOKENS must be a JSON object mapping worker IDs to credentials")
+		}
+	}
+	controller.httpCertFile = strings.TrimSpace(os.Getenv("NODREN_HTTP_CERT_FILE"))
+	controller.httpKeyFile = strings.TrimSpace(os.Getenv("NODREN_HTTP_KEY_FILE"))
+	if err := validateControllerSecurity(controller.authMode, controller.apiToken, controller.workerTokens, httpAddr, tcpAddr, controller.httpCertFile, controller.httpKeyFile); err != nil {
+		log.Fatal(err)
+	}
 	controller.shutdownToken = strings.TrimSpace(os.Getenv("NODREN_SHUTDOWN_TOKEN"))
 	if controller.shutdownToken != "" {
 		controller.shutdown = stop

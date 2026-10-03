@@ -27,10 +27,20 @@ public sealed class NodrenApiClient : IDisposable
 
     public NodrenApiClient(string controllerUrl)
     {
-        _httpClient = new HttpClient
+        var apiToken = Environment.GetEnvironmentVariable("NODREN_API_TOKEN");
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = string.IsNullOrWhiteSpace(apiToken),
+        };
+        _httpClient = new HttpClient(handler)
         {
             Timeout = TimeSpan.FromSeconds(10),
         };
+        if (!string.IsNullOrWhiteSpace(apiToken))
+        {
+            _httpClient.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiToken);
+        }
         SetControllerUrl(controllerUrl);
     }
 
@@ -49,6 +59,14 @@ public sealed class NodrenApiClient : IDisposable
             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             throw new NodrenApiException($"Invalid Controller URL: {controllerUrl}");
+        }
+
+        var apiToken = Environment.GetEnvironmentVariable("NODREN_API_TOKEN");
+        if (!string.IsNullOrWhiteSpace(apiToken) &&
+            uri.Scheme == Uri.UriSchemeHttp &&
+            !uri.IsLoopback)
+        {
+            throw new NodrenApiException("Refusing to send NODREN_API_TOKEN over a non-HTTPS Controller URL");
         }
 
         _httpClient.BaseAddress = uri;

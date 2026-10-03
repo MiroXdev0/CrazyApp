@@ -5,6 +5,7 @@ namespace App.Services;
 public sealed class NodrenSettings
 {
     public string ControllerUrl { get; set; } = "http://127.0.0.1:8080";
+    public bool IsDarkTheme { get; set; }
 }
 
 public static class NodrenSettingsStore
@@ -16,22 +17,15 @@ public static class NodrenSettingsStore
 
     public static NodrenSettings Load()
     {
-        var configured = Environment.GetEnvironmentVariable("NODREN_MANAGED_CONTROLLER_URL")
-            ?? Environment.GetEnvironmentVariable("NODREN_CONTROLLER_URL")
-            ?? Environment.GetEnvironmentVariable("NODREN_HTTP_ADDR");
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            return new NodrenSettings { ControllerUrl = Normalize(configured) };
-        }
-
+        var settings = new NodrenSettings();
         try
         {
             if (File.Exists(SettingsPath))
             {
-                var settings = JsonSerializer.Deserialize<NodrenSettings>(File.ReadAllText(SettingsPath));
-                if (settings is not null && !string.IsNullOrWhiteSpace(settings.ControllerUrl))
+                var storedSettings = JsonSerializer.Deserialize<NodrenSettings>(File.ReadAllText(SettingsPath));
+                if (storedSettings is not null && !string.IsNullOrWhiteSpace(storedSettings.ControllerUrl))
                 {
-                    return settings;
+                    settings = storedSettings;
                 }
             }
         }
@@ -42,7 +36,15 @@ public static class NodrenSettingsStore
         {
         }
 
-        return new NodrenSettings();
+        var configured = Environment.GetEnvironmentVariable("NODREN_MANAGED_CONTROLLER_URL")
+            ?? Environment.GetEnvironmentVariable("NODREN_CONTROLLER_URL")
+            ?? Environment.GetEnvironmentVariable("NODREN_HTTP_ADDR");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            settings.ControllerUrl = Normalize(configured);
+        }
+
+        return settings;
     }
 
     public static void Save(NodrenSettings settings)

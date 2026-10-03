@@ -3,177 +3,318 @@
         xmlns:vm="using:App.ViewModels"
         x:Class="App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Width="1100"
-        Height="760"
+        Width="1180"
+        Height="800"
         MinWidth="900"
-        MinHeight="600"
-        Background="#10151D"
+        MinHeight="620"
+        Background="{DynamicResource NodrenWindowBackground}"
         Title="Nodren">
     <Design.DataContext>
         <vm:MainViewModel />
     </Design.DataContext>
 
-    <Grid RowDefinitions="Auto,*" Margin="24">
-        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
-            <StackPanel>
-                <TextBlock FontSize="28" FontWeight="SemiBold" Foreground="#F4F7FB" Text="Nodren" />
-                <TextBlock Margin="0,4,0,0" Foreground="#9AA7B8" Text="Native workload cluster dashboard" />
-            </StackPanel>
-            <StackPanel Grid.Column="1" HorizontalAlignment="Right">
-                <TextBlock HorizontalAlignment="Right" FontSize="15" FontWeight="SemiBold" Text="{Binding ControllerStatus}" />
-                <TextBlock HorizontalAlignment="Right" Margin="0,4,0,0" Foreground="#9AA7B8" Text="{Binding LastUpdated}" />
-            </StackPanel>
-        </Grid>
+    <Grid RowDefinitions="72,*">
+        <Border Grid.Row="0"
+                Background="{DynamicResource NodrenSurface}"
+                BorderBrush="{DynamicResource NodrenBorder}"
+                BorderThickness="0,0,0,1"
+                Padding="24,0">
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="18">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="11">
+                    <Border Width="34" Height="34" CornerRadius="9" Background="#6258F5">
+                        <TextBlock HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   FontSize="19"
+                                   FontWeight="Bold"
+                                   Foreground="White"
+                                   Text="N" />
+                    </Border>
+                    <StackPanel VerticalAlignment="Center" Spacing="1">
+                        <TextBlock FontSize="17" FontWeight="Bold" Text="Nodren" />
+                        <TextBlock Classes="muted" FontSize="9" FontWeight="SemiBold" Text="CLUSTER CONTROL CENTER" />
+                    </StackPanel>
+                </StackPanel>
 
-        <TabControl Grid.Row="1">
-            <TabItem Header="Dashboard">
-                <ScrollViewer Padding="0,18,0,0">
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right" Spacing="3">
+                    <TextBlock HorizontalAlignment="Right" FontSize="12" FontWeight="SemiBold" Text="{Binding ControllerStatus}" />
+                    <TextBlock Classes="muted" HorizontalAlignment="Right" FontSize="10" Text="{Binding LastUpdated}" />
+                </StackPanel>
+
+                <Button Grid.Column="2"
+                        VerticalAlignment="Center"
+                        Classes="secondary"
+                        Command="{Binding ToggleThemeCommand}"
+                        Content="{Binding ThemeToggleLabel}" />
+            </Grid>
+        </Border>
+
+        <TabControl Grid.Row="1"
+                    Margin="0,12,14,16"
+                    TabStripPlacement="Left">
+            <TabItem Header="Overview">
+                <ScrollViewer Padding="20,10,10,20">
                     <StackPanel Spacing="16">
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
-                            <Border Padding="18" Background="#192331" CornerRadius="8">
-                                <StackPanel>
-                                    <TextBlock Foreground="#9AA7B8" Text="Workers" />
-                                    <TextBlock Margin="0,8,0,0" FontSize="24" Text="{Binding Workers.Count}" />
-                                    <TextBlock Margin="0,8,0,0" Foreground="#B5C2D2" Text="{Binding WorkerSummary}" TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,2">
+                            <StackPanel Spacing="3">
+                                <TextBlock Classes="page-title" Text="Overview" />
+                                <TextBlock Classes="muted" Text="Live status across your Nodren cluster." />
+                            </StackPanel>
+                            <Border Grid.Column="1" Classes="card" Padding="11,7" VerticalAlignment="Center">
+                                <TextBlock FontSize="11" FontWeight="SemiBold" Text="{Binding ControllerStatus}" />
+                            </Border>
+                        </Grid>
+
+                        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="11">
+                            <Border Classes="card" Padding="14">
+                                <StackPanel Spacing="5">
+                                    <TextBlock Classes="muted" FontSize="11" Text="Worker nodes" />
+                                    <TextBlock FontSize="27" FontWeight="SemiBold" Text="{Binding Workers.Count}" />
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding WorkerSummary}" TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
-                                <StackPanel>
-                                    <TextBlock Foreground="#9AA7B8" Text="Jobs" />
-                                    <TextBlock Margin="0,8,0,0" FontSize="24" Text="{Binding Jobs.Count}" />
-                                    <TextBlock Margin="0,8,0,0" Foreground="#B5C2D2" Text="{Binding JobSummary}" TextWrapping="Wrap" />
+                            <Border Grid.Column="1" Classes="card" Padding="14">
+                                <StackPanel Spacing="5">
+                                    <TextBlock Classes="muted" FontSize="11" Text="Workloads" />
+                                    <TextBlock FontSize="27" FontWeight="SemiBold" Text="{Binding Jobs.Count}" />
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding JobSummary}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="2" Classes="card" Padding="14">
+                                <StackPanel Spacing="5">
+                                    <TextBlock Classes="muted" FontSize="11" Text="Cluster health" />
+                                    <TextBlock FontSize="16" FontWeight="SemiBold" Text="{Binding ClusterSummary}" TextWrapping="Wrap" />
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding ControllerUptime}" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="3" Classes="card" Padding="14">
+                                <StackPanel Spacing="5">
+                                    <TextBlock Classes="muted" FontSize="11" Text="Resource usage" />
+                                    <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding ResourceSummary}" TextWrapping="Wrap" />
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding ActivitySummary}" TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
                         </Grid>
-                        <Grid ColumnDefinitions="*,*" ColumnSpacing="16">
-                            <Border Padding="18" Background="#192331" CornerRadius="8">
-                                <StackPanel Spacing="7">
-                                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Cluster health" />
-                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ClusterSummary}" TextWrapping="Wrap" />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding ControllerUptime}" TextWrapping="Wrap" />
+
+                        <Grid ColumnDefinitions="1.3*,*" ColumnSpacing="14">
+                            <Border Classes="card" Padding="17">
+                                <StackPanel Spacing="12">
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <StackPanel Spacing="3">
+                                            <TextBlock Classes="section-title" Text="System" />
+                                            <TextBlock Classes="muted" FontSize="11" Text="Registered worker nodes" />
+                                        </StackPanel>
+                                        <Button Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                Command="{Binding RefreshCommand}"
+                                                Content="Refresh" />
+                                    </Grid>
+                                    <ListBox ItemsSource="{Binding Workers}" MaxHeight="220">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="{DynamicResource NodrenBorderSubtle}" BorderThickness="0,0,0,1" Padding="8,10">
+                                                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                                                        <Border Width="28" Height="28" CornerRadius="7" Background="{DynamicResource NodrenSurfaceAlt}">
+                                                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Classes="muted" FontSize="11" Text="N" />
+                                                        </Border>
+                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                                                            <TextBlock FontSize="11" FontWeight="SemiBold" Text="{Binding Info.Id}" />
+                                                            <TextBlock Classes="muted" FontSize="10">
+                                                                <Run Text="{Binding Info.Hostname}" />
+                                                                <Run Text=" · " />
+                                                                <Run Text="{Binding Info.CpuCores}" />
+                                                                <Run Text=" cores · " />
+                                                                <Run Text="{Binding Info.RamGb}" />
+                                                                <Run Text=" GB RAM" />
+                                                            </TextBlock>
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="2"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="10"
+                                                                   FontWeight="SemiBold"
+                                                                   Text="{Binding State}" />
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding ControllerUrl}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding ControllerUptime}" TextWrapping="Wrap" />
+                                    <TextBlock Foreground="{DynamicResource NodrenDangerText}" FontSize="11" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
-                            <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
-                                <StackPanel Spacing="7">
-                                    <TextBlock FontSize="18" FontWeight="SemiBold" Text="Dynamic resource usage" />
-                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ResourceSummary}" TextWrapping="Wrap" />
-                                    <TextBlock Foreground="#B5C2D2" Text="{Binding ActivitySummary}" TextWrapping="Wrap" />
+                            <Border Grid.Column="1" Classes="card" Padding="17">
+                                <StackPanel Spacing="9">
+                                    <TextBlock Classes="section-title" Text="Recent workloads" />
+                                    <ListBox ItemsSource="{Binding Jobs}" MaxHeight="160">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid ColumnDefinitions="2*,*,Auto" Margin="4,5">
+                                                    <TextBlock FontSize="11" FontWeight="SemiBold" Text="{Binding Command}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Classes="muted" FontSize="10" Text="{Binding Status}" />
+                                                    <TextBlock Grid.Column="2" Foreground="{DynamicResource NodrenAccentText}" FontSize="10" Text="{Binding Distribution.ProgressPercent, StringFormat={}{0:0.#}%}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding ActivitySummary}" TextWrapping="Wrap" />
                                 </StackPanel>
                             </Border>
                         </Grid>
-                        <Border Padding="18" Background="#192331" CornerRadius="8">
-                            <StackPanel Spacing="8">
-                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Controller" />
-                                <TextBlock Foreground="#B5C2D2" Text="{Binding ControllerUrl}" />
-                                <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
-                                <Button HorizontalAlignment="Left" Padding="18,8" Command="{Binding RefreshCommand}" Content="Refresh now" />
-                            </StackPanel>
-                        </Border>
-                        <Border Padding="18" Background="#192331" CornerRadius="8">
-                            <StackPanel Spacing="8">
-                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Recent job activity" />
-                                <ListBox ItemsSource="{Binding Jobs}" MaxHeight="180">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <Grid ColumnDefinitions="2*,*,*" Margin="4">
-                                                <TextBlock Text="{Binding Command}" />
-                                                <TextBlock Grid.Column="1" Foreground="#B5C2D2" Text="{Binding Status}" />
-                                                <TextBlock Grid.Column="2" Foreground="#9AA7B8" Text="{Binding Distribution.ProgressPercent, StringFormat={}{0:0.#}%}" />
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                            </StackPanel>
-                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Workers">
-                <Grid ColumnDefinitions="2*,3*" ColumnSpacing="16" Margin="0,18,0,0">
-                    <ListBox ItemsSource="{Binding Workers}" SelectedItem="{Binding SelectedWorker}">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Margin="6" Spacing="4">
-                                    <TextBlock FontWeight="SemiBold" Text="{Binding Info.Id}" />
-                                    <TextBlock Foreground="#B5C2D2" Text="{Binding State}" />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding Info.Os} · {Binding Info.Arch}" />
-                                    <TextBlock Foreground="#9AA7B8" Text="CPU capacity {Binding Info.CpuCores} · topology {Binding Info.PhysicalCpuCores}c/{Binding Info.LogicalCpuCores}t · RAM {Binding Info.RamGb} GB" />
-                                    <TextBlock Foreground="#9AA7B8" Text="Load {Binding Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · active {Binding Telemetry.ActiveTasks}" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                    <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
-                        <ScrollViewer>
-                            <StackPanel Spacing="8">
-                                <TextBlock FontSize="18" FontWeight="SemiBold" Text="Worker details" />
-                                <TextBlock Text="{Binding SelectedWorker.Info.Id}" />
-                                <TextBlock Foreground="#B5C2D2" Text="{Binding SelectedWorker.State}" />
-                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.Hostname}" />
-                                <TextBlock Foreground="#9AA7B8" Text="CPU model: {Binding SelectedWorker.Info.CpuModel}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="CPU topology (static): {Binding SelectedWorker.Info.PhysicalCpuCores} physical / {Binding SelectedWorker.Info.LogicalCpuCores} logical · scheduler capacity: {Binding SelectedWorker.Info.CpuCores}" TextWrapping="Wrap" />
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                    <TextBlock Foreground="#9AA7B8" Text="CPU allocated: " />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AllocatedCpuCores}" />
-                                    <TextBlock Foreground="#9AA7B8" Text=" / " />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.CpuCores}" />
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                    <TextBlock Foreground="#9AA7B8" Text="RAM allocated: " />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AllocatedRamGb}" />
-                                    <TextBlock Foreground="#9AA7B8" Text=" / " />
-                                    <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.Info.RamGb}" />
-                                    <TextBlock Foreground="#9AA7B8" Text=" GB" />
-                                </StackPanel>
-                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.AssignedJobs.Count}" />
-                                <TextBlock Foreground="#9AA7B8" Text="{Binding SelectedWorker.LastHeartbeat}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="Telemetry CPU: {Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%} · RAM available: {Binding SelectedWorker.Telemetry.MemoryAvailableGb} GB · GPU: {Binding SelectedWorker.Telemetry.GpuUtilizationPercent, StringFormat={}{0:0.#}%}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="GPU available VRAM: {Binding SelectedWorker.Telemetry.GpuAvailableVramGb} GB (measured={Binding SelectedWorker.Telemetry.GpuAvailableVramKnown})" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="Tasks active: {Binding SelectedWorker.Telemetry.ActiveTasks} · completed: {Binding SelectedWorker.Telemetry.CompletedTasks} · failed: {Binding SelectedWorker.Telemetry.FailedTasks}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="GPU (static): {Binding SelectedWorker.Info.Gpu.Vendor} {Binding SelectedWorker.Info.Gpu.Model} · {Binding SelectedWorker.Info.Gpu.VramGb} GB · compute {Binding SelectedWorker.Info.Gpu.ComputeCapability}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9AA7B8" Text="Scheduler capacity: {Binding SelectedWorker.EffectiveCapacity, StringFormat={}{0:0.##}} · performance factor: {Binding SelectedWorker.PerformanceFactor, StringFormat={}{0:0.##}}" TextWrapping="Wrap" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button Command="{Binding PingWorkerCommand}" Content="Ping" />
-                                    <Button Command="{Binding PauseWorkerCommand}" Content="Pause" />
-                                    <Button Command="{Binding ResumeWorkerCommand}" Content="Resume" />
-                                    <Button Command="{Binding RemoveWorkerCommand}" Content="Remove" />
-                                </StackPanel>
-                            </StackPanel>
-                        </ScrollViewer>
-                    </Border>
-                </Grid>
-            </TabItem>
-
-            <TabItem Header="Jobs">
-                <Grid ColumnDefinitions="2*,3*" ColumnSpacing="16" Margin="0,18,0,0">
-                    <Border Padding="10" Background="#192331" CornerRadius="8">
-                        <ListBox ItemsSource="{Binding Jobs}" SelectedItem="{Binding SelectedJob}">
+            <TabItem Header="Nodes">
+                <Grid ColumnDefinitions="0.95*,1.45*" ColumnSpacing="14" Margin="20,10,10,16">
+                    <StackPanel Spacing="11">
+                        <StackPanel Spacing="3">
+                            <TextBlock Classes="page-title" Text="Nodes" />
+                            <TextBlock Classes="muted" Text="Worker availability and live resources." />
+                        </StackPanel>
+                        <ListBox ItemsSource="{Binding Workers}" SelectedItem="{Binding SelectedWorker}">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <StackPanel Margin="6" Spacing="3">
-                                        <StackPanel Orientation="Horizontal" Spacing="6">
-                                            <TextBlock FontWeight="SemiBold" Text="{Binding Command}" />
-                                            <TextBlock FontWeight="SemiBold" Text="{Binding Status}" />
+                                    <Border Classes="card" Margin="0,0,0,8" Padding="13">
+                                        <StackPanel Spacing="5">
+                                            <Grid ColumnDefinitions="*,Auto">
+                                                <TextBlock FontSize="13" FontWeight="SemiBold" Text="{Binding Info.Id}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Grid.Column="1" Foreground="{DynamicResource NodrenSuccessText}" FontSize="10" FontWeight="SemiBold" Text="{Binding State}" />
+                                            </Grid>
+                                            <TextBlock Classes="muted" FontSize="10" Text="{Binding Info.Hostname}" />
+                                            <TextBlock Classes="muted" FontSize="10">
+                                                <Run Text="{Binding Info.Os}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{Binding Info.Arch}" />
+                                            </TextBlock>
+                                            <TextBlock Classes="muted" FontSize="10">
+                                                <Run Text="CPU " />
+                                                <Run Text="{Binding Info.CpuCores}" />
+                                                <Run Text=" cores · RAM " />
+                                                <Run Text="{Binding Info.RamGb}" />
+                                                <Run Text=" GB" />
+                                            </TextBlock>
+                                            <TextBlock Classes="muted" FontSize="10">
+                                                <Run Text="Load " />
+                                                <Run Text="{Binding Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%}" />
+                                                <Run Text=" · " />
+                                                <Run Text="{Binding Telemetry.ActiveTasks}" />
+                                                <Run Text=" active tasks" />
+                                            </TextBlock>
                                         </StackPanel>
-                                        <StackPanel Orientation="Horizontal" Spacing="4">
-                                            <TextBlock Foreground="#9AA7B8" Text="{Binding Id}" />
-                                            <TextBlock Foreground="#9AA7B8" Text="worker" />
-                                            <TextBlock Foreground="#9AA7B8" Text="{Binding NodeId}" />
-                                        </StackPanel>
-                                    </StackPanel>
+                                    </Border>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
-                    </Border>
-                    <Border Grid.Column="1" Padding="18" Background="#192331" CornerRadius="8">
+                    </StackPanel>
+
+                    <Border Grid.Column="1" Classes="card" Padding="18">
                         <ScrollViewer>
-                            <StackPanel Spacing="10">
-                                <TextBlock Foreground="#D7E0EB" Text="{Binding JobDetails}" TextWrapping="Wrap" />
-                                <StackPanel Orientation="Horizontal" Spacing="8">
-                                    <Button Command="{Binding CancelJobCommand}" Content="Cancel" />
-                                    <Button Command="{Binding PauseJobCommand}" Content="Pause" />
-                                    <Button Command="{Binding ResumeJobCommand}" Content="Resume" />
+                            <StackPanel Spacing="12">
+                                <Grid ColumnDefinitions="*,Auto">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Classes="section-title" Text="Node details" />
+                                        <TextBlock Classes="muted" FontSize="11" Text="{Binding SelectedWorker.Info.Id}" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource NodrenSuccessText}" FontSize="11" FontWeight="SemiBold" Text="{Binding SelectedWorker.State}" />
+                                </Grid>
+                                <Border Height="1" Background="{DynamicResource NodrenBorderSubtle}" />
+                                <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="12">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="HOST" />
+                                        <TextBlock FontSize="12" Text="{Binding SelectedWorker.Info.Hostname}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="PLATFORM" />
+                                        <TextBlock FontSize="12">
+                                            <Run Text="{Binding SelectedWorker.Info.Os}" />
+                                            <Run Text=" · " />
+                                            <Run Text="{Binding SelectedWorker.Info.Arch}" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="CPU MODEL" />
+                                        <TextBlock FontSize="12" Text="{Binding SelectedWorker.Info.CpuModel}" TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="CPU TOPOLOGY" />
+                                        <TextBlock FontSize="12" TextWrapping="Wrap">
+                                            <Run Text="{Binding SelectedWorker.Info.PhysicalCpuCores}" />
+                                            <Run Text=" physical / " />
+                                            <Run Text="{Binding SelectedWorker.Info.LogicalCpuCores}" />
+                                            <Run Text=" logical" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="2" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="SCHEDULER CAPACITY" />
+                                        <TextBlock FontSize="12" TextWrapping="Wrap">
+                                            <Run Text="{Binding SelectedWorker.EffectiveCapacity, StringFormat={}{0:0.##}}" />
+                                            <Run Text=" cores · " />
+                                            <Run Text="{Binding SelectedWorker.Info.RamGb}" />
+                                            <Run Text=" GB RAM" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="2" Grid.Column="1" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="ALLOCATED" />
+                                        <TextBlock FontSize="12" TextWrapping="Wrap">
+                                            <Run Text="{Binding SelectedWorker.AllocatedCpuCores}" />
+                                            <Run Text=" CPU cores · " />
+                                            <Run Text="{Binding SelectedWorker.AllocatedRamGb}" />
+                                            <Run Text=" GB RAM" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="3" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="LIVE TELEMETRY" />
+                                        <TextBlock FontSize="12" TextWrapping="Wrap">
+                                            <Run Text="CPU " />
+                                            <Run Text="{Binding SelectedWorker.Telemetry.CpuUtilizationPercent, StringFormat={}{0:0.#}%}" />
+                                            <Run Text=" · RAM " />
+                                            <Run Text="{Binding SelectedWorker.Telemetry.MemoryAvailableGb}" />
+                                            <Run Text=" GB available · GPU " />
+                                            <Run Text="{Binding SelectedWorker.Telemetry.GpuUtilizationPercent, StringFormat={}{0:0.#}%}" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <StackPanel Grid.Row="3" Grid.Column="1" Spacing="3">
+                                        <TextBlock Classes="muted" FontSize="10" Text="TASKS" />
+                                        <TextBlock FontSize="12" TextWrapping="Wrap">
+                                            <Run Text="{Binding SelectedWorker.Telemetry.ActiveTasks}" />
+                                            <Run Text=" active · " />
+                                            <Run Text="{Binding SelectedWorker.Telemetry.CompletedTasks}" />
+                                            <Run Text=" completed · " />
+                                            <Run Text="{Binding SelectedWorker.Telemetry.FailedTasks}" />
+                                            <Run Text=" failed" />
+                                        </TextBlock>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap">
+                                    <Run Text="GPU (static): " />
+                                    <Run Text="{Binding SelectedWorker.Info.Gpu.Vendor}" />
+                                    <Run Text=" " />
+                                    <Run Text="{Binding SelectedWorker.Info.Gpu.Model}" />
+                                    <Run Text=" · " />
+                                    <Run Text="{Binding SelectedWorker.Info.Gpu.VramGb}" />
+                                    <Run Text=" GB · compute " />
+                                    <Run Text="{Binding SelectedWorker.Info.Gpu.ComputeCapability}" />
+                                </TextBlock>
+                                <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap">
+                                    <Run Text="GPU available VRAM: " />
+                                    <Run Text="{Binding SelectedWorker.Telemetry.GpuAvailableVramGb}" />
+                                    <Run Text=" GB (measured=" />
+                                    <Run Text="{Binding SelectedWorker.Telemetry.GpuAvailableVramKnown}" />
+                                    <Run Text=")" />
+                                </TextBlock>
+                                <TextBlock Classes="muted" FontSize="11" TextWrapping="Wrap">
+                                    <Run Text="Performance factor " />
+                                    <Run Text="{Binding SelectedWorker.PerformanceFactor, StringFormat={}{0:0.##}}" />
+                                    <Run Text=" · assigned jobs " />
+                                    <Run Text="{Binding SelectedWorker.AssignedJobs.Count}" />
+                                    <Run Text=" · heartbeat " />
+                                    <Run Text="{Binding SelectedWorker.LastHeartbeat}" />
+                                </TextBlock>
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button Command="{Binding PingWorkerCommand}" Content="Ping" />
+                                    <Button Classes="secondary" Command="{Binding PauseWorkerCommand}" Content="Pause" />
+                                    <Button Classes="secondary" Command="{Binding ResumeWorkerCommand}" Content="Resume" />
+                                    <Button Classes="danger" Command="{Binding RemoveWorkerCommand}" Content="Remove" />
                                 </StackPanel>
                             </StackPanel>
                         </ScrollViewer>
@@ -181,50 +322,137 @@
                 </Grid>
             </TabItem>
 
-            <TabItem Header="Run">
-                <ScrollViewer Padding="0,18,0,0">
-                    <StackPanel MaxWidth="720" Spacing="12">
-                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="Run task" />
-                        <TextBlock Foreground="#9AA7B8" Text="Submit a native workload or an OS process through the Controller HTTP API. Process tasks run on a trusted worker with bounded capture and timeout enforcement." TextWrapping="Wrap" />
-                        <TextBlock Margin="0,8,0,0" Text="Task type" />
-                        <ComboBox ItemsSource="{Binding TaskTypes}" SelectedItem="{Binding SelectedTaskType}" />
-                        <TextBlock Margin="0,8,0,0" Text="Workload" />
-                        <ComboBox ItemsSource="{Binding Workloads}" SelectedItem="{Binding SelectedWorkload}" />
-                        <TextBlock Text="Executable or command" />
-                        <TextBox Text="{Binding Executable}" PlaceholderText="/usr/bin/echo or C:\\Windows\\System32\\cmd.exe" />
-                        <TextBlock Text="Script runtime" />
-                        <TextBox Text="{Binding ScriptRuntime}" PlaceholderText="python" />
-                        <TextBlock Text="Script path" />
-                        <TextBox Text="{Binding ScriptPath}" PlaceholderText="script.py" />
-                        <TextBlock Text="Process/script arguments" />
-                        <TextBox Text="{Binding GeneralArguments}" PlaceholderText="hello world" />
-                        <TextBlock Margin="0,8,0,0" Text="Work distribution" />
-                        <StackPanel Orientation="Horizontal" Spacing="16">
-                            <RadioButton GroupName="DistributionMode" Content="Automatic" IsChecked="{Binding IsAutomaticDistribution}" />
-                            <RadioButton GroupName="DistributionMode" Content="Manual" IsChecked="{Binding IsManualDistribution}" />
+            <TabItem Header="Workloads">
+                <Grid ColumnDefinitions="0.95*,1.45*" ColumnSpacing="14" Margin="20,10,10,16">
+                    <StackPanel Spacing="11">
+                        <StackPanel Spacing="3">
+                            <TextBlock Classes="page-title" Text="Workloads" />
+                            <TextBlock Classes="muted" Text="Distributed jobs, task progress, and partitions." />
                         </StackPanel>
-                        <TextBlock Foreground="#9AA7B8" Text="{Binding DistributionSummary}" TextWrapping="Wrap" />
-                        <CheckBox Content="Advanced Distribution" IsChecked="{Binding IsAdvancedDistributionOpen}" />
-                        <Border IsVisible="{Binding IsAdvancedDistributionOpen}" Padding="12" Background="#192331" CornerRadius="8">
-                            <StackPanel Spacing="8">
-                                <TextBlock FontWeight="SemiBold" Text="Manual allocation" />
-                                <TextBlock Foreground="#9AA7B8" Text="Enter worker-id=percent entries separated by commas. The total must be 100%." TextWrapping="Wrap" />
-                                <TextBox Text="{Binding ManualAllocationText}" PlaceholderText="worker-a=60,worker-b=40" />
-                                <TextBlock Foreground="#9AA7B8" Text="Manual values are used only when Manual is selected." TextWrapping="Wrap" />
+                        <Border Classes="card" Padding="7">
+                            <ListBox ItemsSource="{Binding Jobs}" SelectedItem="{Binding SelectedJob}">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Classes="card" Margin="0,0,0,6" Padding="12">
+                                            <StackPanel Spacing="7">
+                                                <Grid ColumnDefinitions="*,Auto">
+                                                    <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding Command}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Foreground="{DynamicResource NodrenAccentText}" FontSize="10" FontWeight="SemiBold" Text="{Binding Status}" />
+                                                </Grid>
+                                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding Distribution.ProgressPercent}" />
+                                                <Grid ColumnDefinitions="*,Auto">
+                                                    <TextBlock Classes="muted" FontSize="10" Text="{Binding Id}" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Classes="muted" FontSize="10" Text="{Binding Distribution.ProgressPercent, StringFormat={}{0:0.#}%}" />
+                                                </Grid>
+                                                <TextBlock Classes="muted" FontSize="10" TextTrimming="CharacterEllipsis">
+                                                    <Run Text="Worker " />
+                                                    <Run Text="{Binding NodeId}" />
+                                                    <Run Text=" · " />
+                                                    <Run Text="{Binding Distribution.CompletedPartitions}" />
+                                                    <Run Text="/" />
+                                                    <Run Text="{Binding Distribution.TotalPartitions}" />
+                                                    <Run Text=" partitions" />
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Border>
+                    </StackPanel>
+                    <Border Grid.Column="1" Classes="card" Padding="18">
+                        <ScrollViewer>
+                            <StackPanel Spacing="12">
+                                <StackPanel Spacing="3">
+                                    <TextBlock Classes="section-title" Text="Workload details" />
+                                    <TextBlock Classes="muted" FontSize="11" Text="Progress, scheduler assignments, and result information" />
+                                </StackPanel>
+                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding SelectedJob.Distribution.ProgressPercent}" />
+                                <TextBlock FontSize="12" LineHeight="20" Text="{Binding JobDetails}" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="7">
+                                    <Button Classes="danger" Command="{Binding CancelJobCommand}" Content="Cancel" />
+                                    <Button Classes="secondary" Command="{Binding PauseJobCommand}" Content="Pause" />
+                                    <Button Classes="secondary" Command="{Binding ResumeJobCommand}" Content="Resume" />
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Run / Tasks">
+                <ScrollViewer Padding="20,10,10,20">
+                    <StackPanel MaxWidth="820" Spacing="14">
+                        <StackPanel Spacing="3">
+                            <TextBlock Classes="page-title" Text="Run a task" />
+                            <TextBlock Classes="muted" Text="Submit a native workload or a process task to the Controller for scheduling." TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Border Classes="card" Padding="18">
+                            <StackPanel Spacing="10">
+                                <TextBlock Classes="section-title" Text="Task configuration" />
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="14">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="TASK TYPE" />
+                                        <ComboBox ItemsSource="{Binding TaskTypes}" SelectedItem="{Binding SelectedTaskType}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="NATIVE WORKLOAD" />
+                                        <ComboBox ItemsSource="{Binding Workloads}" SelectedItem="{Binding SelectedWorkload}" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Classes="muted" FontSize="11" Text="EXECUTABLE OR COMMAND" />
+                                <TextBox Text="{Binding Executable}" PlaceholderText="/usr/bin/echo or C:\Windows\System32\cmd.exe" />
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="14">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="SCRIPT RUNTIME" />
+                                        <TextBox Text="{Binding ScriptRuntime}" PlaceholderText="python" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="SCRIPT PATH" />
+                                        <TextBox Text="{Binding ScriptPath}" PlaceholderText="script.py" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Classes="muted" FontSize="11" Text="PROCESS / SCRIPT ARGUMENTS" />
+                                <TextBox Text="{Binding GeneralArguments}" PlaceholderText="Arguments separated by spaces" />
+                                <Border Height="1" Margin="0,3" Background="{DynamicResource NodrenBorderSubtle}" />
+                                <TextBlock Classes="section-title" Text="Work distribution" />
+                                <StackPanel Orientation="Horizontal" Spacing="16">
+                                    <RadioButton GroupName="DistributionMode" Content="Automatic" IsChecked="{Binding IsAutomaticDistribution}" />
+                                    <RadioButton GroupName="DistributionMode" Content="Manual" IsChecked="{Binding IsManualDistribution}" />
+                                </StackPanel>
+                                <TextBlock Classes="muted" FontSize="11" Text="{Binding DistributionSummary}" TextWrapping="Wrap" />
+                                <CheckBox Content="Advanced distribution" IsChecked="{Binding IsAdvancedDistributionOpen}" />
+                                <Border Classes="card" IsVisible="{Binding IsAdvancedDistributionOpen}" Padding="13">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock Classes="section-title" Text="Manual allocation" />
+                                        <TextBlock Classes="muted" FontSize="11" Text="Enter worker-id=percent entries separated by commas. The total must be 100%." TextWrapping="Wrap" />
+                                        <TextBox Text="{Binding ManualAllocationText}" PlaceholderText="worker-a=60,worker-b=40" />
+                                        <TextBlock Classes="muted" FontSize="10" Text="Manual values are used only when Manual is selected." />
+                                    </StackPanel>
+                                </Border>
+                                <Border Height="1" Margin="0,3" Background="{DynamicResource NodrenBorderSubtle}" />
+                                <TextBlock Classes="section-title" Text="Native workload inputs" />
+                                <TextBlock Classes="muted" FontSize="11" Text="Arguments for sum / xor" />
+                                <TextBox Text="{Binding Arguments}" PlaceholderText="1 2 3 4 5" />
+                                <Grid ColumnDefinitions="*,*" ColumnSpacing="14">
+                                    <StackPanel Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="LEFT VECTOR · DOT PRODUCT" />
+                                        <TextBox Text="{Binding LeftVector}" PlaceholderText="1,2,3" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Spacing="6">
+                                        <TextBlock Classes="muted" FontSize="11" Text="RIGHT VECTOR · DOT PRODUCT" />
+                                        <TextBox Text="{Binding RightVector}" PlaceholderText="4,5,6" />
+                                    </StackPanel>
+                                </Grid>
+                                <Button HorizontalAlignment="Left" Margin="0,5,0,0" Padding="20,10" Command="{Binding RunWorkloadCommand}" Content="Submit task" />
                             </StackPanel>
                         </Border>
-                        <TextBlock Text="Arguments for sum / xor" />
-                        <TextBox Text="{Binding Arguments}" PlaceholderText="1 2 3 4 5" />
-                        <TextBlock Text="Left vector for dot_product" />
-                        <TextBox Text="{Binding LeftVector}" PlaceholderText="1,2,3" />
-                        <TextBlock Text="Right vector for dot_product" />
-                        <TextBox Text="{Binding RightVector}" PlaceholderText="4,5,6" />
-                        <Button HorizontalAlignment="Left" Padding="22,10" Command="{Binding RunWorkloadCommand}" Content="Submit workload" />
-                        <Border Padding="14" Background="#192331" CornerRadius="8">
-                            <StackPanel Spacing="6">
-                                <TextBlock Text="{Binding RunStatus}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#9FE3B1" Text="{Binding RunResult}" TextWrapping="Wrap" />
-                                <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                        <Border Classes="card" Padding="16">
+                            <StackPanel Spacing="7">
+                                <TextBlock Classes="section-title" Text="Execution result" />
+                                <TextBlock FontSize="12" Text="{Binding RunStatus}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="{DynamicResource NodrenSuccessText}" FontSize="12" Text="{Binding RunResult}" TextWrapping="Wrap" />
+                                <TextBlock Foreground="{DynamicResource NodrenDangerText}" FontSize="11" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -232,20 +460,46 @@
             </TabItem>
 
             <TabItem Header="Settings">
-                <Border Padding="0,18,0,0">
-                    <StackPanel MaxWidth="720" Spacing="12">
-                    <TextBlock FontSize="20" FontWeight="SemiBold" Text="Settings" />
-                    <TextBlock Foreground="#9AA7B8" Text="Configure the Controller HTTP endpoint. The UI does not start or stop backend processes." TextWrapping="Wrap" />
-                    <TextBlock Margin="0,8,0,0" Text="Controller URL" />
-                    <TextBox Text="{Binding ControllerUrl}" PlaceholderText="http://127.0.0.1:8080" />
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                        <Button Padding="18,8" Command="{Binding TestConnectionCommand}" Content="Save and test" />
-                        <Button Padding="18,8" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                <ScrollViewer Padding="20,10,10,20">
+                    <StackPanel MaxWidth="760" Spacing="14">
+                        <StackPanel Spacing="3">
+                            <TextBlock Classes="page-title" Text="Settings" />
+                            <TextBlock Classes="muted" Text="Controller connection and application preferences." />
+                        </StackPanel>
+                        <Border Classes="card" Padding="18">
+                            <StackPanel Spacing="12">
+                                <TextBlock Classes="section-title" Text="Controller connection" />
+                                <TextBlock Classes="muted" FontSize="11" Text="Nodren starts and manages its bundled Go Controller automatically. You can also connect the UI to another Controller endpoint." TextWrapping="Wrap" />
+                                <TextBlock Classes="muted" FontSize="11" Text="CONTROLLER URL" />
+                                <TextBox Text="{Binding ControllerUrl}" PlaceholderText="http://127.0.0.1:8080" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Command="{Binding TestConnectionCommand}" Content="Save and test" />
+                                    <Button Classes="secondary" Command="{Binding SaveSettingsCommand}" Content="Save" />
+                                </StackPanel>
+                                <TextBlock Foreground="{DynamicResource NodrenDangerText}" FontSize="11" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="card" Padding="18">
+                            <StackPanel Spacing="7">
+                                <TextBlock Classes="section-title" Text="Application" />
+                                <TextBlock Classes="muted" FontSize="11" Text="Nodren Desktop · 0.2.0" />
+                                <TextBlock Classes="muted" FontSize="11" Text="The desktop application manages the local Controller lifecycle. Worker nodes connect independently and continue operating when this window is closed." TextWrapping="Wrap" />
+                                <Border Height="1" Margin="0,5" Background="{DynamicResource NodrenBorderSubtle}" />
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14">
+                                    <StackPanel Spacing="3">
+                                        <TextBlock Classes="section-title" Text="Appearance" />
+                                        <TextBlock Classes="muted" FontSize="11" Text="Choose a light or dark color theme. Your choice is remembered." />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            VerticalAlignment="Center"
+                                            Classes="secondary"
+                                            Command="{Binding ToggleThemeCommand}"
+                                            Content="{Binding ThemeToggleLabel}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
-                    <TextBlock Foreground="#F2B880" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
-                    <TextBlock Margin="0,22,0,0" Foreground="#9AA7B8" Text="Nodren UI 0.2.0" />
-                    </StackPanel>
-                </Border>
+                </ScrollViewer>
             </TabItem>
         </TabControl>
     </Grid>

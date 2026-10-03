@@ -123,7 +123,7 @@ func TestGeneralTaskWireRoundTrip(t *testing.T) {
 		Spec: GeneralTaskSpec{
 			Type: TaskTypeScript, Version: "1", Runtime: "python", Script: "main.py",
 			Arguments: []string{"--name", "Nodren"}, Environment: map[string]string{"MODE": "test"},
-			WorkingDirectory: ".", StdinB64: "aGVsbG8=", TimeoutMS: 1000,
+			StdinB64: "aGVsbG8=", TimeoutMS: 1000,
 			StdoutLimitBytes: 2048, StderrLimitBytes: 2048,
 			Requirements:    ResourceRequirements{CPUCores: 2, RAMGB: 4, MaxRAMGB: 8, GPURequired: true, GPUCount: 1, VRAMGB: 8, AcceleratorType: "CUDA", GPUCapabilities: []string{"tensor"}},
 			Target:          TaskTarget{OS: "windows", Arch: "x86_64", RequiredRuntimes: []string{"python"}, AllowedWorkerIDs: []string{"worker-a"}},

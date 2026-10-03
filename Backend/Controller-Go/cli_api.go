@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,8 +28,9 @@ type cliHealth struct {
 }
 
 type cliClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL  string
+	http     *http.Client
+	apiToken string
 }
 
 type cliError struct {
@@ -49,10 +51,49 @@ func newCLIClient() *cliClient {
 	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
 		address = "http://" + address
 	}
-	return &cliClient{
-		baseURL: address,
-		http:    &http.Client{Timeout: 10 * time.Second},
+	apiToken := strings.TrimSpace(os.Getenv("NODREN_API_TOKEN"))
+	client := &cliClient{
+		baseURL:  address,
+		apiToken: apiToken,
 	}
+	client.http = &http.Client{Timeout: 10 * time.Second, CheckRedirect: client.checkRedirect}
+	return client
+}
+
+func (c *cliClient) checkRedirect(_ *http.Request, _ []*http.Request) error {
+	if c.apiToken != "" {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}
+
+func (c *cliClient) authorize(request *http.Request) error {
+	if c.apiToken == "" {
+		return nil
+	}
+	if !allowsBearerTokenTransport(request.URL) {
+		return &cliError{message: "Refusing to send NODREN_API_TOKEN over a non-HTTPS Controller URL"}
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiToken)
+	return nil
+}
+
+func allowsBearerTokenTransport(target *url.URL) bool {
+	if target == nil {
+		return false
+	}
+	if strings.EqualFold(target.Scheme, "https") {
+		return true
+	}
+	if !strings.EqualFold(target.Scheme, "http") {
+		return false
+	}
+	host := target.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c *cliClient) request(method, path string, input, output any) error {
@@ -70,6 +111,9 @@ func (c *cliClient) request(method, path string, input, output any) error {
 	}
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if err := c.authorize(req); err != nil {
+		return err
 	}
 	response, err := c.http.Do(req)
 	if err != nil {
@@ -179,7 +223,10 @@ func (c *cliClient) events() error {
 	if err != nil {
 		return err
 	}
-	response, err := (&http.Client{Timeout: 0}).Do(request)
+	if err := c.authorize(request); err != nil {
+		return err
+	}
+	response, err := (&http.Client{Timeout: 0, CheckRedirect: c.checkRedirect}).Do(request)
 	if err != nil {
 		return &cliError{message: fmt.Sprintf("Controller unreachable at %s: %v", c.baseURL, err)}
 	}
@@ -208,7 +255,11 @@ func (c *cliClient) streamAIOutput(taskIDs []string) (func(), error) {
 		cancel()
 		return func() {}, err
 	}
-	response, err := (&http.Client{Timeout: 0}).Do(request)
+	if err := c.authorize(request); err != nil {
+		cancel()
+		return func() {}, err
+	}
+	response, err := (&http.Client{Timeout: 0, CheckRedirect: c.checkRedirect}).Do(request)
 	if err != nil {
 		cancel()
 		return func() {}, &cliError{message: fmt.Sprintf("Controller unreachable at %s: %v", c.baseURL, err)}
@@ -385,6 +436,9 @@ func (c *cliClient) uploadArtifactWithKind(path, kind string) (TaskArtifact, err
 	request.Header.Set("X-Nodren-Artifact-Kind", kind)
 	request.Header.Set("X-Nodren-Artifact-SHA256", digest)
 	request.ContentLength = int64(size)
+	if err := c.authorize(request); err != nil {
+		return TaskArtifact{}, err
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		return TaskArtifact{}, &cliError{message: fmt.Sprintf("Controller unreachable at %s: %v", c.baseURL, err)}
@@ -421,6 +475,9 @@ func (c *cliClient) lookupArtifact(digest string, size uint64) (TaskArtifact, bo
 	if err != nil {
 		return TaskArtifact{}, false, &cliError{message: "Invalid Controller URL: " + err.Error()}
 	}
+	if err := c.authorize(request); err != nil {
+		return TaskArtifact{}, false, err
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		return TaskArtifact{}, false, &cliError{message: fmt.Sprintf("Controller unreachable at %s: %v", c.baseURL, err)}
@@ -444,6 +501,9 @@ func (c *cliClient) downloadArtifact(id, path string) error {
 	request, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/artifacts/"+url.PathEscape(id), nil)
 	if err != nil {
 		return &cliError{message: "Invalid Controller URL: " + err.Error()}
+	}
+	if err := c.authorize(request); err != nil {
+		return err
 	}
 	response, err := c.http.Do(request)
 	if err != nil {

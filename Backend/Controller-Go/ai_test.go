@@ -50,6 +50,42 @@ func TestWorkerOutputArtifactIsVerifiedAndStored(t *testing.T) {
 	}
 }
 
+func TestArtifactPathRejectsTraversalAndUnsafeIdentifiers(t *testing.T) {
+	controller := NewController("", "")
+	controller.artifactDir = t.TempDir()
+	for _, id := range []string{"../escape", "..", "sub/path", `sub\path`, "C:escape", "", strings.Repeat("a", maxArtifactIDLength+1)} {
+		if path, err := controller.artifactPath(id); err == nil || path != "" {
+			t.Errorf("artifactPath(%q) = %q, %v; want rejection", id, path, err)
+		}
+	}
+	path, err := controller.artifactPath("AI-OUT-123456")
+	if err != nil {
+		t.Fatalf("valid artifact ID rejected: %v", err)
+	}
+	if filepath.Dir(path) != controller.artifactStoreDir() {
+		t.Fatalf("artifact path escaped store: %q", path)
+	}
+}
+
+func TestBeginWorkerArtifactRejectsTraversalID(t *testing.T) {
+	controller := NewController("", "")
+	controller.artifactDir = t.TempDir()
+	controller.jobs["JOB-output"] = &Job{
+		ID:     "JOB-output",
+		Status: JobRunning,
+		Task:   &GeneralTaskSpec{OutputArtifacts: []TaskArtifact{{ID: "../escape", Name: "result.json"}}},
+	}
+	controller.taskToJob[77] = "JOB-output"
+	controller.taskToNode[77] = "worker-output"
+	begin, err := encodeArtifactBegin(77, TaskArtifact{ID: "../escape", Name: "result.json", Size: 0, SHA256: hex.EncodeToString(make([]byte, sha256.Size))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.beginWorkerArtifact("worker-output", begin); err == nil {
+		t.Fatal("worker output artifact with traversal ID was accepted")
+	}
+}
+
 func TestSafeTensorsInspectionEstimatesMemory(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "model.safetensors")

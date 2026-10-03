@@ -11,6 +11,7 @@ pub enum ApiError {
         message: String,
     },
     InvalidResponse(String),
+    InsecureTransport(String),
     UnknownNode(String),
     UnknownJob(String),
     JobFailed {
@@ -36,6 +37,10 @@ impl fmt::Display for ApiError {
             Self::InvalidResponse(message) => {
                 write!(formatter, "Invalid Controller response: {message}")
             }
+            Self::InsecureTransport(url) => write!(
+                formatter,
+                "Refusing to send NODREN_API_TOKEN over a non-HTTPS Controller URL: {url}"
+            ),
             Self::UnknownNode(node_id) => write!(formatter, "Unknown worker: {node_id}"),
             Self::UnknownJob(job_id) => write!(formatter, "Unknown job: {job_id}"),
             Self::JobFailed {

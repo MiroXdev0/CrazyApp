@@ -102,6 +102,7 @@ fn first_line(value: &str) -> String {
 }
 
 pub fn command_for_task(task: &GeneralTaskEnvelope) -> Result<Command, String> {
+    use crate::process_executor::apply_workload_environment;
     let runtime = detect().ok_or_else(|| {
         "llama.cpp execution unavailable: no supported llama-cli executable was detected"
             .to_string()
@@ -121,12 +122,12 @@ pub fn command_for_task(task: &GeneralTaskEnvelope) -> Result<Command, String> {
     }
     let mut command = Command::new(runtime.executable());
     command.args(&task.spec.arguments);
-    for (key, value) in &task.spec.environment {
-        command.env(key, value);
-    }
-    if !task.spec.working_directory.is_empty() {
-        command.current_dir(&task.spec.working_directory);
-    }
+    apply_workload_environment(
+        &mut command,
+        &task.spec.environment,
+        &task.spec.working_directory,
+    )?;
+    command.current_dir(&task.spec.working_directory);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

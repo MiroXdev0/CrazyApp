@@ -178,6 +178,34 @@ func defaultTaskSpec(spec GeneralTaskSpec) GeneralTaskSpec {
 
 func validateGeneralTask(spec GeneralTaskSpec) error {
 	spec = defaultTaskSpec(spec)
+	if len(spec.Arguments) > 256 {
+		return errors.New("task cannot contain more than 256 arguments")
+	}
+	totalTaskText := 0
+	for _, argument := range spec.Arguments {
+		if len(argument) > 1<<20 {
+			return errors.New("task argument exceeds 1 MiB")
+		}
+		totalTaskText += len(argument)
+	}
+	if len(spec.Environment) > 128 {
+		return errors.New("task cannot contain more than 128 environment variables")
+	}
+	for key, value := range spec.Environment {
+		if len(key) > 256 || len(value) > 8192 {
+			return errors.New("task environment entry exceeds its size limit")
+		}
+		totalTaskText += len(key) + len(value)
+	}
+	if totalTaskText > 8<<20 {
+		return errors.New("task arguments and environment exceed 8 MiB")
+	}
+	if len(spec.InputArtifacts)+len(spec.OutputArtifacts) > 128 {
+		return errors.New("task cannot reference more than 128 artifacts")
+	}
+	if spec.WorkingDirectory != "" {
+		return errors.New("worker-managed working directories are required")
+	}
 	if spec.Type != TaskTypeProcess && spec.Type != TaskTypeScript && spec.Type != TaskTypeNativeWorkload && spec.Type != TaskTypeCommand {
 		return fmt.Errorf("unsupported task type %q", spec.Type)
 	}
@@ -206,10 +234,10 @@ func validateGeneralTask(spec GeneralTaskSpec) error {
 		}
 	}
 	for _, artifact := range append(append([]TaskArtifact{}, spec.InputArtifacts...), spec.OutputArtifacts...) {
-		if strings.TrimSpace(artifact.ID) == "" || strings.TrimSpace(artifact.Name) == "" {
-			return errors.New("task artifacts require an id and name")
+		if !safeArtifactID(strings.TrimSpace(artifact.ID)) || strings.TrimSpace(artifact.Name) == "" {
+			return errors.New("task artifacts require a valid id and name")
 		}
-		if strings.IndexByte(artifact.Name, 0) >= 0 || artifact.Name == "." || artifact.Name == ".." || strings.ContainsAny(artifact.Name, `/\\`) {
+		if !safeArtifactName(artifact.Name) {
 			return fmt.Errorf("artifact name %q must be a relative file name", artifact.Name)
 		}
 		if len(artifact.SHA256) > 0 && len(artifact.SHA256) != 64 {

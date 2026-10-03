@@ -27,7 +27,10 @@ func (c *Controller) enrichAIArtifactsLocked(spec *AIWorkloadSpec) error {
 		if stored == nil || strings.EqualFold(stored.Kind, "package") {
 			continue
 		}
-		path := c.artifactPath(stored.ID)
+		path, err := c.artifactPath(stored.ID)
+		if err != nil {
+			return err
+		}
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}

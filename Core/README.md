@@ -305,15 +305,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 The release directory contains exactly:
 
 ```text
-Norden.exe
-norden.exe
-norden-worker.exe
-norden-core.dll
+NodrenApp.exe
+nodren.exe
+nodren-worker.exe
+nodren-core.dll
 ```
 
-`Norden.exe` manages the Go Controller and Avalonia desktop UI.
-`norden.exe` is the Rust CLI. `norden-worker.exe` loads
-`norden-core.dll` beside itself through the C ABI. Do not use the
+`NodrenApp.exe` manages the Go Controller and Avalonia desktop UI.
+`nodren.exe` is the Rust CLI. `nodren-worker.exe` loads
+`nodren-core.dll` beside itself through the C ABI. Do not use the
 standalone Core development script as a release-packaging command.
 
 To build and run the standalone native self-tests during development, see

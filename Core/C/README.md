@@ -11,6 +11,6 @@ It provides:
 
 The hot execution path does not allocate per task.
 
-In the Windows release, this C memory layer is built into `norden-core.dll`.
-The Worker is `norden-worker.exe`; the other release files are `Norden.exe`
-(desktop app plus managed Go Controller) and `norden.exe` (Rust CLI).
+In the Windows release, this C memory layer is built into `nodren-core.dll`.
+The Worker is `nodren-worker.exe`; the other release files are `NodrenApp.exe`
+(desktop app plus managed Go Controller) and `nodren.exe` (Rust CLI).

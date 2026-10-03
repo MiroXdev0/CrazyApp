@@ -7,7 +7,7 @@ if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
     echo "Linux release smoke test must run on Linux x86_64" >&2
     exit 2
 fi
-for artifact in nodren nodren-worker nodren-ui libnodren_core.so; do
+for artifact in nodren nodren-worker NodrenApp libnodren_core.so; do
     [[ -f "$RELEASE/$artifact" ]] || { echo "Missing $RELEASE/$artifact" >&2; exit 1; }
 done
 
@@ -25,6 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+NODREN_AUTH_MODE=development \
 NODREN_NODE_ADDR="127.0.0.1:$tcp_port" \
 NODREN_HTTP_ADDR="127.0.0.1:$http_port" \
     "$RELEASE/nodren" >"$work_dir/controller.log" 2>&1 &
@@ -44,6 +45,7 @@ while time.time() < deadline:
 raise SystemExit("Controller health check timed out")
 PY
 
+NODREN_AUTH_MODE=development \
 NODREN_CONTROLLER_ADDR="127.0.0.1:$tcp_port" \
     "$RELEASE/nodren-worker" --id LINUX-RELEASE-WORKER --cpu-cores 2 --ram-gb 4 \
     >"$work_dir/worker.log" 2>&1 &
@@ -65,14 +67,14 @@ raise SystemExit("Worker registration timed out")
 PY
 
 NODREN_CONTROLLER_URL="http://127.0.0.1:$http_port" \
-    "$RELEASE/nodren-ui" --self-test
+    "$RELEASE/NodrenApp" --self-test
 
 NODREN_CONTROLLER_URL="http://127.0.0.1:$http_port" \
     "$RELEASE/nodren" run sum 1 2 3 2>&1 | grep -Fq 'Result       6'
 
 if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
     set +e
-    timeout 5s "$RELEASE/nodren-ui" >"$work_dir/ui.log" 2>&1
+    timeout 5s "$RELEASE/NodrenApp" >"$work_dir/ui.log" 2>&1
     ui_status=$?
     set -e
     if [[ "$ui_status" -eq 127 ]]; then

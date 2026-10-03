@@ -2,14 +2,209 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="App.App"
              xmlns:local="using:App"
-             RequestedThemeVariant="Default">
-             <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
+             RequestedThemeVariant="Light">
 
     <Application.DataTemplates>
         <local:ViewLocator />
     </Application.DataTemplates>
 
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="NodrenWindowBackground" Color="#F5F6F8" />
+                    <SolidColorBrush x:Key="NodrenSurface" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="NodrenSurfaceAlt" Color="#F1F3FA" />
+                    <SolidColorBrush x:Key="NodrenBorder" Color="#E1E6EE" />
+                    <SolidColorBrush x:Key="NodrenBorderSubtle" Color="#E8EBF1" />
+                    <SolidColorBrush x:Key="NodrenTextPrimary" Color="#172033" />
+                    <SolidColorBrush x:Key="NodrenTextStrong" Color="#121A2B" />
+                    <SolidColorBrush x:Key="NodrenTextSecondary" Color="#778196" />
+                    <SolidColorBrush x:Key="NodrenAccent" Color="#6258F5" />
+                    <SolidColorBrush x:Key="NodrenAccentHover" Color="#5147E8" />
+                    <SolidColorBrush x:Key="NodrenAccentPressed" Color="#4439D5" />
+                    <SolidColorBrush x:Key="NodrenAccentSoft" Color="#E9ECFF" />
+                    <SolidColorBrush x:Key="NodrenAccentText" Color="#5147E8" />
+                    <SolidColorBrush x:Key="NodrenSecondarySurface" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="NodrenSecondaryHover" Color="#F3F5FA" />
+                    <SolidColorBrush x:Key="NodrenSecondaryText" Color="#39445A" />
+                    <SolidColorBrush x:Key="NodrenDisabledSurface" Color="#D5D8E7" />
+                    <SolidColorBrush x:Key="NodrenDisabledText" Color="#8A91A3" />
+                    <SolidColorBrush x:Key="NodrenDangerSurface" Color="#FFF1F2" />
+                    <SolidColorBrush x:Key="NodrenDangerHover" Color="#FFE4E7" />
+                    <SolidColorBrush x:Key="NodrenDangerBorder" Color="#F3CDD2" />
+                    <SolidColorBrush x:Key="NodrenDangerBorderHover" Color="#E9AEB7" />
+                    <SolidColorBrush x:Key="NodrenDangerText" Color="#B42332" />
+                    <SolidColorBrush x:Key="NodrenSuccessText" Color="#16834A" />
+                    <SolidColorBrush x:Key="NodrenProgressTrack" Color="#ECEEF5" />
+                    <SolidColorBrush x:Key="NodrenNavigationText" Color="#657087" />
+                    <SolidColorBrush x:Key="NodrenNavigationHover" Color="#F4F5FC" />
+                    <SolidColorBrush x:Key="NodrenNavigationHoverText" Color="#3730A3" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="NodrenWindowBackground" Color="#11141C" />
+                    <SolidColorBrush x:Key="NodrenSurface" Color="#191E29" />
+                    <SolidColorBrush x:Key="NodrenSurfaceAlt" Color="#222837" />
+                    <SolidColorBrush x:Key="NodrenBorder" Color="#30394A" />
+                    <SolidColorBrush x:Key="NodrenBorderSubtle" Color="#2A3342" />
+                    <SolidColorBrush x:Key="NodrenTextPrimary" Color="#E7EAF2" />
+                    <SolidColorBrush x:Key="NodrenTextStrong" Color="#F4F6FC" />
+                    <SolidColorBrush x:Key="NodrenTextSecondary" Color="#A0AABD" />
+                    <SolidColorBrush x:Key="NodrenAccent" Color="#786EFF" />
+                    <SolidColorBrush x:Key="NodrenAccentHover" Color="#8B82FF" />
+                    <SolidColorBrush x:Key="NodrenAccentPressed" Color="#6258F5" />
+                    <SolidColorBrush x:Key="NodrenAccentSoft" Color="#302D53" />
+                    <SolidColorBrush x:Key="NodrenAccentText" Color="#B2ACFF" />
+                    <SolidColorBrush x:Key="NodrenSecondarySurface" Color="#222837" />
+                    <SolidColorBrush x:Key="NodrenSecondaryHover" Color="#2B3445" />
+                    <SolidColorBrush x:Key="NodrenSecondaryText" Color="#D6DCE8" />
+                    <SolidColorBrush x:Key="NodrenDisabledSurface" Color="#343B4A" />
+                    <SolidColorBrush x:Key="NodrenDisabledText" Color="#8993A5" />
+                    <SolidColorBrush x:Key="NodrenDangerSurface" Color="#39242B" />
+                    <SolidColorBrush x:Key="NodrenDangerHover" Color="#4A2933" />
+                    <SolidColorBrush x:Key="NodrenDangerBorder" Color="#68404C" />
+                    <SolidColorBrush x:Key="NodrenDangerBorderHover" Color="#80505D" />
+                    <SolidColorBrush x:Key="NodrenDangerText" Color="#FF9DAA" />
+                    <SolidColorBrush x:Key="NodrenSuccessText" Color="#70D6A0" />
+                    <SolidColorBrush x:Key="NodrenProgressTrack" Color="#30394A" />
+                    <SolidColorBrush x:Key="NodrenNavigationText" Color="#A0AABD" />
+                    <SolidColorBrush x:Key="NodrenNavigationHover" Color="#252D3D" />
+                    <SolidColorBrush x:Key="NodrenNavigationHoverText" Color="#D0CCFF" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
+        <Style Selector="TextBlock">
+            <Setter Property="FontFamily" Value="Inter" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextPrimary}" />
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource NodrenAccent}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenAccent}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button:pointerover">
+            <Setter Property="Background" Value="{DynamicResource NodrenAccentHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenAccentHover}" />
+        </Style>
+        <Style Selector="Button:pressed">
+            <Setter Property="Background" Value="{DynamicResource NodrenAccentPressed}" />
+        </Style>
+        <Style Selector="Button:disabled">
+            <Setter Property="Background" Value="{DynamicResource NodrenDisabledSurface}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenDisabledText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenDisabledSurface}" />
+        </Style>
+        <Style Selector="Button.secondary">
+            <Setter Property="Background" Value="{DynamicResource NodrenSecondarySurface}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenSecondaryText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenBorder}" />
+        </Style>
+        <Style Selector="Button.secondary:pointerover">
+            <Setter Property="Background" Value="{DynamicResource NodrenSecondaryHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenBorder}" />
+        </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="{DynamicResource NodrenDangerSurface}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenDangerText}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenDangerBorder}" />
+        </Style>
+        <Style Selector="Button.danger:pointerover">
+            <Setter Property="Background" Value="{DynamicResource NodrenDangerHover}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenDangerBorderHover}" />
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{DynamicResource NodrenSurface}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="11,8" />
+        </Style>
+        <Style Selector="TextBox:focus">
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenAccent}" />
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource NodrenSurface}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
+        <Style Selector="ListBox">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="ListBoxItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ListBoxItem:pointerover">
+            <Setter Property="Background" Value="{DynamicResource NodrenSecondaryHover}" />
+        </Style>
+        <Style Selector="ListBoxItem:selected">
+            <Setter Property="Background" Value="{DynamicResource NodrenAccentSoft}" />
+        </Style>
+        <Style Selector="TabControl">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style Selector="TabItem">
+            <Setter Property="Width" Value="156" />
+            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="Margin" Value="8,2,8,2" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenNavigationText}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+        <Style Selector="TabItem:pointerover">
+            <Setter Property="Background" Value="{DynamicResource NodrenNavigationHover}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenNavigationHoverText}" />
+        </Style>
+        <Style Selector="TabItem:selected">
+            <Setter Property="Background" Value="{DynamicResource NodrenAccentSoft}" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenAccentText}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{DynamicResource NodrenSurface}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource NodrenBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="11" />
+        </Style>
+        <Style Selector="ProgressBar">
+            <Setter Property="Foreground" Value="{DynamicResource NodrenAccent}" />
+            <Setter Property="Background" Value="{DynamicResource NodrenProgressTrack}" />
+            <Setter Property="Height" Value="7" />
+        </Style>
+        <Style Selector="TextBlock.page-title">
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextStrong}" />
+        </Style>
+        <Style Selector="TextBlock.section-title">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextPrimary}" />
+        </Style>
+        <Style Selector="TextBlock.muted">
+            <Setter Property="Foreground" Value="{DynamicResource NodrenTextSecondary}" />
+        </Style>
+        <Style Selector="TextBlock.eyebrow">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource NodrenAccentText}" />
+        </Style>
     </Application.Styles>
 </Application>

@@ -7,7 +7,7 @@ namespace App.Services;
 
 internal static class InstanceControl
 {
-    private static string PipeName => $"Nodren.Norden.Shutdown.{Environment.UserName}";
+    private static string PipeName => $"Nodren.NodrenApp.Shutdown.{Environment.UserName}";
 
     public static async Task ListenAsync(CancellationToken cancellationToken)
     {

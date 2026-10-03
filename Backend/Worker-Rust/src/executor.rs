@@ -2,9 +2,9 @@ use crate::hashing::sha256_file;
 use crate::native_core::NativeCore;
 use crate::process_executor;
 use crate::protocol::{
-    ArtifactBegin, ArtifactChunk, ArtifactSpec, GeneralTaskEnvelope, MessageType, NodeInfo, Task,
-    encode_artifact_begin, encode_artifact_chunk, encode_artifact_end, encode_general_task_result,
-    encode_task_output, encode_task_results, write_frame,
+    ArtifactBegin, ArtifactChunk, ArtifactSpec, AuthenticatedWriter, GeneralTaskEnvelope,
+    MessageType, NodeInfo, Task, encode_artifact_begin, encode_artifact_chunk, encode_artifact_end,
+    encode_general_task_result, encode_task_output, encode_task_results,
 };
 use crate::{can_run, execute_task, resource_failure_result};
 
@@ -12,7 +12,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
-    net::TcpStream,
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
@@ -24,7 +23,7 @@ use std::{
 struct WorkItem {
     task: Task,
     request_id: u64,
-    writer: Arc<Mutex<TcpStream>>,
+    writer: Arc<Mutex<AuthenticatedWriter>>,
     connection_failed: Arc<AtomicBool>,
 }
 
@@ -253,8 +252,7 @@ impl WorkerExecutor {
                                 .lock()
                                 .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                                 .and_then(|mut writer| {
-                                    write_frame(
-                                        &mut *writer,
+                                    writer.write_frame(
                                         MessageType::TaskResultBatch,
                                         item.request_id,
                                         &payload,
@@ -288,7 +286,7 @@ impl WorkerExecutor {
         &self,
         task: Task,
         request_id: u64,
-        writer: Arc<Mutex<TcpStream>>,
+        writer: Arc<Mutex<AuthenticatedWriter>>,
         connection_failed: Arc<AtomicBool>,
     ) -> io::Result<()> {
         self.queue.push(WorkItem {
@@ -320,7 +318,7 @@ impl WorkerExecutor {
         task: GeneralTaskEnvelope,
         request_id: u64,
         node: NodeInfo,
-        writer: Arc<Mutex<TcpStream>>,
+        writer: Arc<Mutex<AuthenticatedWriter>>,
         connection_failed: Arc<AtomicBool>,
     ) -> io::Result<()> {
         if let Err(error) = validate_general_task(&node, &task) {
@@ -344,7 +342,7 @@ impl WorkerExecutor {
                 .lock()
                 .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                 .and_then(|mut writer| {
-                    write_frame(&mut *writer, MessageType::TaskResult, request_id, &payload)
+                    writer.write_frame(MessageType::TaskResult, request_id, &payload)
                 })?;
             return Ok(());
         }
@@ -373,7 +371,7 @@ impl WorkerExecutor {
                         .lock()
                         .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                         .and_then(|mut writer| {
-                            write_frame(&mut *writer, MessageType::TaskResult, request_id, &payload)
+                            writer.write_frame(MessageType::TaskResult, request_id, &payload)
                         })?;
                     return Ok(());
                 }
@@ -423,8 +421,7 @@ impl WorkerExecutor {
                                     .lock()
                                     .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                                     .and_then(|mut writer| {
-                                        write_frame(
-                                            &mut *writer,
+                                        writer.write_frame(
                                             MessageType::TaskResult,
                                             request_id,
                                             &payload,
@@ -455,12 +452,7 @@ impl WorkerExecutor {
                             .lock()
                             .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                             .and_then(|mut stream| {
-                                write_frame(
-                                    &mut *stream,
-                                    MessageType::TaskState,
-                                    task.task_id,
-                                    &payload,
-                                )
+                                stream.write_frame(MessageType::TaskState, task.task_id, &payload)
                             });
                         if write_result.is_err() {
                             stream_failed.store(true, Ordering::Release);
@@ -502,12 +494,7 @@ impl WorkerExecutor {
                             .lock()
                             .map_err(|_| io::Error::other("worker writer mutex poisoned"))
                             .and_then(|mut writer| {
-                                write_frame(
-                                    &mut *writer,
-                                    MessageType::TaskResult,
-                                    request_id,
-                                    &payload,
-                                )
+                                writer.write_frame(MessageType::TaskResult, request_id, &payload)
                             })
                     });
                 if write_result.is_err() {
@@ -679,7 +666,7 @@ impl WorkerExecutor {
 }
 
 fn send_output_artifact(
-    writer: &Arc<Mutex<TcpStream>>,
+    writer: &Arc<Mutex<AuthenticatedWriter>>,
     task_id: u64,
     artifact: &process_executor::ProducedArtifact,
 ) -> io::Result<()> {
@@ -687,9 +674,7 @@ fn send_output_artifact(
     writer
         .lock()
         .map_err(|_| io::Error::other("worker writer mutex poisoned"))
-        .and_then(|mut stream| {
-            write_frame(&mut *stream, MessageType::ArtifactBegin, task_id, &begin)
-        })?;
+        .and_then(|mut stream| stream.write_frame(MessageType::ArtifactBegin, task_id, &begin))?;
     let mut file = File::open(&artifact.path)?;
     let mut buffer = vec![0u8; 64 << 10];
     let mut offset = 0u64;
@@ -703,7 +688,7 @@ fn send_output_artifact(
             .lock()
             .map_err(|_| io::Error::other("worker writer mutex poisoned"))
             .and_then(|mut stream| {
-                write_frame(&mut *stream, MessageType::ArtifactChunk, task_id, &chunk)
+                stream.write_frame(MessageType::ArtifactChunk, task_id, &chunk)
             })?;
         offset += count as u64;
     }
@@ -711,7 +696,7 @@ fn send_output_artifact(
     writer
         .lock()
         .map_err(|_| io::Error::other("worker writer mutex poisoned"))
-        .and_then(|mut stream| write_frame(&mut *stream, MessageType::ArtifactEnd, task_id, &end))
+        .and_then(|mut stream| stream.write_frame(MessageType::ArtifactEnd, task_id, &end))
 }
 
 fn record_task_outcome(status: &str, completed: &AtomicU64, failed: &AtomicU64) {

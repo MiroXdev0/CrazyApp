@@ -25,17 +25,17 @@ Rust CLI / Avalonia desktop app
 The user-facing Windows x64 release contains exactly:
 
 ```text
-Norden.exe
-norden.exe
-norden-worker.exe
-norden-core.dll
+NodrenApp.exe
+nodren.exe
+nodren-worker.exe
+nodren-core.dll
 ```
 
-`Norden.exe` is the Avalonia desktop application and manages the Go Controller
+`NodrenApp.exe` is the Avalonia desktop application and manages the Go Controller
 internally, including startup and shutdown. Users do not start a separate
-Controller executable. `norden.exe` is the Rust CLI and can be invoked as
-`norden` when the release directory is on `PATH`. `norden-worker.exe` is the
-standalone Rust Worker; it loads the adjacent `norden-core.dll` through the
+Controller executable. `nodren.exe` is the Rust CLI and can be invoked as
+`nodren` when the release directory is on `PATH`. `nodren-worker.exe` is the
+standalone Rust Worker; it loads the adjacent `nodren-core.dll` through the
 existing C ABI for native workloads.
 
 Build and test the Windows release from the repository root:
@@ -46,9 +46,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-clean-release.ps1
 ```
 
 The release build requires Go, Rust, .NET 10, Visual Studio C++ Build Tools,
-and LLVM `clang`. The distinct `Norden.exe` and `norden.exe` names require
-NTFS per-directory case sensitivity in the output directory. The build script
-uses `%LOCALAPPDATA%\Nodren\release` when the workspace cannot enable it.
+and LLVM `clang`. It writes the four-file package to
+`Nodren-1.0.0-windows-x64` by default; no filesystem case-sensitivity setting
+is required.
 
 ## Controller
 
@@ -66,13 +66,45 @@ For backend development and tests:
 cd Backend/Controller-Go
 go test ./...
 go vet ./...
+$env:NODREN_AUTH_MODE = "development"
 go run .
 ```
 
-The development Controller defaults to worker TCP `:9000` and HTTP `:8080`.
-`NODREN_NODE_ADDR` and `NODREN_HTTP_ADDR` configure these bind addresses.
+The development Controller defaults to worker TCP `127.0.0.1:9000` and HTTP
+`127.0.0.1:8080`. `NODREN_NODE_ADDR` and `NODREN_HTTP_ADDR` configure these
+bind addresses. Explicit `development` mode disables authentication and is
+accepted only when both listeners bind to loopback. Set
+`NODREN_AUTH_MODE=development` for a local development Worker as well.
 Running the Controller directly is a development workflow; the Windows
 end-user application starts and manages its own Controller.
+
+### Controller security
+
+Direct Controller startup defaults to `NODREN_AUTH_MODE=secure`. Secure mode
+requires an API bearer token, a unique credential for every authorized Worker,
+and an HTTPS certificate/key pair:
+
+```powershell
+$env:NODREN_AUTH_MODE = "secure"
+$env:NODREN_API_TOKEN = "<random-secret-at-least-32-characters>"
+$env:NODREN_WORKER_TOKENS = '{"worker-01":"<unique-random-secret-at-least-32-characters>"}'
+$env:NODREN_HTTP_CERT_FILE = "C:\path\to\controller.crt"
+$env:NODREN_HTTP_KEY_FILE = "C:\path\to\controller.key"
+$env:NODREN_HTTP_ADDR = "0.0.0.0:8080"
+$env:NODREN_NODE_ADDR = "0.0.0.0:9000"
+go run .
+```
+
+Set each Worker process's `NODREN_WORKER_ID` to an ID in
+`NODREN_WORKER_TOKENS` and `NODREN_WORKER_TOKEN` to its matching credential.
+Set `NODREN_API_TOKEN` in CLI, desktop, or other HTTP API clients. Credentials
+must be kept secret and Worker credentials must be unique. The Worker TCP
+challenge/response and per-frame HMAC protect identity, integrity, and replay;
+they do **not** encrypt TCP traffic. Use a trusted private network or encrypted
+tunnel for Worker connections. Workloads still execute with the Worker
+process's operating-system permissions; the Worker is not an OS sandbox. The
+Go CLI, Rust CLI, and desktop client refuse to send `NODREN_API_TOKEN` to
+non-loopback HTTP URLs; authenticated clients do not follow redirects.
 
 ## Worker
 
@@ -101,7 +133,7 @@ the native build. On supported Linux development hosts, the build script uses
 GCC/G++ for the native Core. Worker options include `--controller
 <host:port>`, `--id <worker-id>`, `--cpu-cores <count>`, `--ram-gb <count>`,
 `--worker-concurrency <count>`, and optional GPU metadata. Run
-`norden-worker.exe --help` for the current Windows executable's full usage.
+`nodren-worker.exe --help` for the current Windows executable's full usage.
 
 ## Scheduling and workloads
 
@@ -148,16 +180,16 @@ The HTTP management API includes `/health`, `/v1/nodes`, `/v1/jobs`,
 `/v1/jobs/{id}/partitions`, `/v1/tasks`, `/v1/artifacts`, and the event stream
 at `/v1/events`. Resource, worker, partition, and job statistics are also
 available through the node/job API endpoints. The Rust CLI uses that API.
-Current command examples, as shown by `norden --help`, include:
+Current command examples, as shown by `nodren --help`, include:
 
 ```text
-norden --help
-norden status
-norden workers list
-norden jobs list
-norden jobs partitions <job-id>
-norden run sum 1 2 3
-norden distribution show
+nodren --help
+nodren status
+nodren workers list
+nodren jobs list
+nodren jobs partitions <job-id>
+nodren run sum 1 2 3
+nodren distribution show
 ```
 
 Set `NODREN_CONTROLLER_URL` to the HTTP API URL; if unset, the CLI accepts
@@ -166,6 +198,10 @@ Set `NODREN_CONTROLLER_URL` to the HTTP API URL; if unset, the CLI accepts
 30 seconds). `NODREN_HTTP_ADDR` also configures the Controller's HTTP bind
 address; `NODREN_NODE_ADDR` configures its worker TCP bind address, and
 `NODREN_STATE_FILE` selects its JSON state file.
+For secure Controller access, use an `https://` `NODREN_CONTROLLER_URL` and
+set `NODREN_API_TOKEN` in the client environment. Development mode is
+loopback-only and must be explicitly selected on both a directly started
+Controller and its local Worker.
 
 `GET /v1/events` provides server-sent events for worker and job lifecycle,
 progress, and partition changes. The Controller persists jobs, partitions,

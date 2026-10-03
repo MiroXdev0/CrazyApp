@@ -21,13 +21,13 @@ not be treated as live cluster telemetry.
 The current Windows release consists of exactly:
 
 ```text
-Norden.exe
-norden.exe
-norden-worker.exe
-norden-core.dll
+NodrenApp.exe
+nodren.exe
+nodren-worker.exe
+nodren-core.dll
 ```
 
-`Norden.exe` is the Avalonia desktop app and manages its Go Controller.
-`norden.exe` is the Rust CLI, `norden-worker.exe` is the Rust Worker, and
-`norden-core.dll` is the Worker native Core loaded through the C ABI. The
+`NodrenApp.exe` is the Avalonia desktop app and manages its Go Controller.
+`nodren.exe` is the Rust CLI, `nodren-worker.exe` is the Rust Worker, and
+`nodren-core.dll` is the Worker native Core loaded through the C ABI. The
 frontend sources are not extra release executables.

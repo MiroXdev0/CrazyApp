@@ -11,7 +11,7 @@ internal sealed class ManagedController : IDisposable
 {
     private const string ControllerResource = "Nodren.Controller.exe";
     private const string ControllerUrl = "http://127.0.0.1:8080";
-    private const string ControllerNodeAddress = ":9000";
+    private const string ControllerNodeAddress = "127.0.0.1:9000";
 
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(1) };
     private readonly string _shutdownToken;
@@ -41,6 +41,11 @@ internal sealed class ManagedController : IDisposable
             Directory.CreateDirectory(dataDirectory);
             var controllerPath = Path.Combine(dataDirectory, "controller.exe");
             await ExtractControllerAsync(controllerPath);
+            var statePath = Environment.GetEnvironmentVariable("NODREN_STATE_FILE");
+            if (string.IsNullOrWhiteSpace(statePath))
+            {
+                statePath = Path.Combine(dataDirectory, "controller-state.json");
+            }
 
             var startInfo = new ProcessStartInfo(controllerPath)
             {
@@ -53,7 +58,8 @@ internal sealed class ManagedController : IDisposable
             startInfo.ArgumentList.Add("serve");
             startInfo.Environment["NODREN_HTTP_ADDR"] = "127.0.0.1:8080";
             startInfo.Environment["NODREN_NODE_ADDR"] = ControllerNodeAddress;
-            startInfo.Environment["NODREN_STATE_FILE"] = Path.Combine(dataDirectory, "controller-state.json");
+            startInfo.Environment["NODREN_AUTH_MODE"] = "development";
+            startInfo.Environment["NODREN_STATE_FILE"] = statePath;
             startInfo.Environment["NODREN_SHUTDOWN_TOKEN"] = shutdownToken;
 
             var process = Process.Start(startInfo)
@@ -179,7 +185,7 @@ internal sealed class ManagedController : IDisposable
     private static async Task ExtractControllerAsync(string destination)
     {
         await using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(ControllerResource)
-            ?? throw new InvalidOperationException("The embedded Controller is missing from Norden.exe.");
+            ?? throw new InvalidOperationException("The embedded Controller is missing from NodrenApp.exe.");
         await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
         await resource.CopyToAsync(output);
     }

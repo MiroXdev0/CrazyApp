@@ -33,38 +33,56 @@ fn capture_output<R: Read + Send + 'static>(
     mut reader: R,
     limit: u64,
     artifact_path: Option<PathBuf>,
+    artifact_limit: u64,
     stream: Option<Arc<dyn Fn(&[u8]) + Send + Sync>>,
-) -> thread::JoinHandle<(Vec<u8>, bool)> {
+) -> thread::JoinHandle<(Vec<u8>, bool, bool)> {
     thread::spawn(move || {
         let limit = usize::try_from(limit.min(64 * 1024 * 1024)).unwrap_or(64 * 1024 * 1024);
         let mut value = Vec::new();
         let mut buffer = vec![0u8; 8192];
         let mut truncated = false;
-        let mut artifact = artifact_path.and_then(|path| File::create(path).ok());
+        let mut artifact_failed = false;
+        let mut artifact_written = 0u64;
+        let mut artifact = match artifact_path {
+            Some(path) => match File::create(path) {
+                Ok(file) => Some(file),
+                Err(_) => {
+                    artifact_failed = true;
+                    None
+                }
+            },
+            None => None,
+        };
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(size) => {
                     if let Some(file) = artifact.as_mut() {
-                        if file.write_all(&buffer[..size]).is_err() {
+                        let remaining = artifact_limit.saturating_sub(artifact_written);
+                        let allowed = usize::try_from(remaining.min(size as u64)).unwrap_or(size);
+                        if file.write_all(&buffer[..allowed]).is_err() || allowed < size {
+                            artifact_failed = true;
                             artifact = None;
+                        } else {
+                            artifact_written += allowed as u64;
                         }
                     }
-                    if let Some(stream) = &stream {
-                        stream(&buffer[..size]);
+                    let remaining = limit.saturating_sub(value.len());
+                    let allowed = size.min(remaining);
+                    if allowed > 0 {
+                        value.extend_from_slice(&buffer[..allowed]);
+                        if let Some(stream) = &stream {
+                            stream(&buffer[..allowed]);
+                        }
                     }
-                    if value.len() < limit {
-                        let remaining = limit - value.len();
-                        value.extend_from_slice(&buffer[..size.min(remaining)]);
-                    }
-                    if value.len() >= limit && size > limit.saturating_sub(value.len()) {
+                    if allowed < size {
                         truncated = true;
                     }
                 }
                 Err(_) => break,
             }
         }
-        (value, truncated)
+        (value, truncated, artifact_failed)
     })
 }
 
@@ -109,21 +127,61 @@ fn command_for_task(task: &GeneralTaskEnvelope) -> Result<Command, String> {
         other => return Err(format!("unsupported task type: {other}")),
     };
     command.args(&spec.arguments);
-    for (key, value) in &spec.environment {
-        command.env(key, value);
-    }
-    if !spec.working_directory.is_empty() {
-        let path = std::path::Path::new(&spec.working_directory);
-        if !path.is_dir() {
-            return Err("working directory does not exist or is not a directory".to_string());
-        }
-        command.current_dir(path);
-    }
+    apply_workload_environment(&mut command, &spec.environment, &spec.working_directory)?;
+    command.current_dir(&spec.working_directory);
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     Ok(command)
+}
+
+pub(crate) fn apply_workload_environment(
+    command: &mut Command,
+    environment: &[(String, String)],
+    workspace: &str,
+) -> Result<(), String> {
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    #[cfg(windows)]
+    {
+        command.env("TEMP", workspace).env("TMP", workspace);
+    }
+    #[cfg(unix)]
+    {
+        command.env("TMPDIR", workspace);
+    }
+    for (key, value) in environment {
+        let normalized = key.to_ascii_uppercase();
+        if key.is_empty()
+            || key.contains('=')
+            || [
+                "TOKEN",
+                "SECRET",
+                "PASSWORD",
+                "CREDENTIAL",
+                "PRIVATE_KEY",
+                "API_KEY",
+                "AUTH",
+            ]
+            .iter()
+            .any(|sensitive| normalized.contains(sensitive))
+        {
+            return Err(format!(
+                "task environment variable {key:?} is reserved or sensitive"
+            ));
+        }
+        command.env(key, value);
+    }
+    Ok(())
 }
 
 fn kill_and_wait(child: &mut Child) -> io::Result<Option<ExitStatus>> {
@@ -151,32 +209,26 @@ fn prepare_input_artifacts(
     task: &mut GeneralTaskEnvelope,
     artifacts: HashMap<String, PathBuf>,
 ) -> Result<Option<PathBuf>, String> {
-    if artifacts.is_empty() && task.spec.output_artifacts.is_empty() {
-        return Ok(None);
+    if !task.spec.working_directory.is_empty() {
+        return Err("user-selected working directories are not permitted".to_string());
     }
-    let workspace = if task.spec.working_directory.is_empty() {
-        let path =
-            std::env::temp_dir().join(format!("nodren-task-{}-{}", task.task_id, task.attempt));
-        fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-        task.spec.working_directory = path.to_string_lossy().into_owned();
-        Some(path)
-    } else {
-        let path = PathBuf::from(&task.spec.working_directory);
-        if !path.is_dir() {
-            return Err("working directory does not exist or is not a directory".to_string());
+    for artifact in &task.spec.output_artifacts {
+        if !safe_artifact_name(&artifact.name) {
+            return Err(format!("unsafe output artifact name: {}", artifact.name));
         }
-        None
-    };
+    }
+    let workspace = create_job_workspace(task.task_id, task.attempt)?;
+    task.spec.working_directory = workspace.to_string_lossy().into_owned();
     let directory = Path::new(&task.spec.working_directory);
     let result = (|| {
         for artifact in &task.spec.input_artifacts {
             let source = artifacts
                 .get(&artifact.name)
                 .ok_or_else(|| format!("input artifact {} is not available", artifact.id))?;
-            let name = Path::new(&artifact.name);
-            if name.file_name().and_then(|value| value.to_str()) != Some(artifact.name.as_str()) {
+            if !safe_artifact_name(&artifact.name) {
                 return Err(format!("unsafe artifact name: {}", artifact.name));
             }
+            let name = Path::new(&artifact.name);
             if artifact.kind.eq_ignore_ascii_case("package") || artifact.name.ends_with(".tar") {
                 extract_tar(source, directory)?;
             } else {
@@ -190,12 +242,62 @@ fn prepare_input_artifacts(
         for source in artifacts.values() {
             let _ = fs::remove_file(source);
         }
-        if let Some(path) = workspace.as_ref() {
-            let _ = fs::remove_dir_all(path);
-        }
+        let _ = fs::remove_dir_all(&workspace);
         return Err(error);
     }
-    Ok(workspace)
+    Ok(Some(workspace))
+}
+
+fn safe_artifact_name(name: &str) -> bool {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', '\0'])
+        || name.ends_with(['.', ' '])
+        || name.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        && !(stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+}
+
+fn create_job_workspace(task_id: u64, attempt: u32) -> Result<PathBuf, String> {
+    static NEXT_WORKSPACE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary_root = std::env::temp_dir();
+    for _ in 0..32 {
+        let serial = NEXT_WORKSPACE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos();
+        let directory = temporary_root.join(format!(
+            "nodren-job-{}-{task_id}-{attempt}-{timestamp:x}-{serial:x}",
+            std::process::id()
+        ));
+        match fs::create_dir(&directory) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                        .map_err(|error| error.to_string())?;
+                }
+                return Ok(directory);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("could not create a unique workload directory".to_string())
 }
 
 fn parse_tar_size(value: &[u8]) -> Result<u64, String> {
@@ -231,7 +333,12 @@ fn parse_tar_mode(value: &[u8]) -> Result<u32, String> {
 }
 
 fn safe_archive_path(value: &str) -> Result<PathBuf, String> {
-    if value.is_empty() || value.contains('\\') || value.starts_with('/') || value.contains('\0') {
+    if value.is_empty()
+        || value.contains('\\')
+        || value.contains(':')
+        || value.starts_with('/')
+        || value.contains('\0')
+    {
         return Err("unsafe package path".to_string());
     }
     let path = Path::new(value);
@@ -251,6 +358,8 @@ fn safe_archive_path(value: &str) -> Result<PathBuf, String> {
 
 fn extract_tar(source: &Path, directory: &Path) -> Result<(), String> {
     let mut archive = File::open(source).map_err(|error| error.to_string())?;
+    let mut extracted_size = 0u64;
+    let mut entry_count = 0usize;
     loop {
         let mut header = [0u8; 512];
         archive
@@ -258,6 +367,10 @@ fn extract_tar(source: &Path, directory: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         if header.iter().all(|value| *value == 0) {
             break;
+        }
+        entry_count = entry_count.saturating_add(1);
+        if entry_count > 10_000 {
+            return Err("package contains too many entries".to_string());
         }
         let name = header[..100]
             .iter()
@@ -267,6 +380,10 @@ fn extract_tar(source: &Path, directory: &Path) -> Result<(), String> {
         let name = std::str::from_utf8(&name).map_err(|_| "invalid package path".to_string())?;
         let relative = safe_archive_path(name)?;
         let size = parse_tar_size(&header[124..136])?;
+        extracted_size = extracted_size
+            .checked_add(size)
+            .filter(|total| *total <= MAX_OUTPUT_ARTIFACT_SIZE)
+            .ok_or_else(|| "package exceeds the 4 GiB extraction limit".to_string())?;
         #[cfg(unix)]
         let mode = parse_tar_mode(&header[100..108])?;
         #[cfg(not(unix))]
@@ -346,11 +463,12 @@ pub fn execute(
             reader,
             task.spec.stdout_limit_bytes,
             stdout_artifact,
+            MAX_OUTPUT_ARTIFACT_SIZE,
             stream,
         )
     });
     let stderr_thread = stderr_reader
-        .map(|reader| capture_output(reader, task.spec.stderr_limit_bytes, None, None));
+        .map(|reader| capture_output(reader, task.spec.stderr_limit_bytes, None, 0, None));
     let stdin_data = task.spec.stdin.clone();
     let stdin_thread = child.stdin.take().map(|mut stdin| {
         thread::spawn(move || {
@@ -402,10 +520,10 @@ pub fn execute(
             }
         }
     }
-    let (stdout, stdout_truncated) = stdout_thread
+    let (stdout, stdout_truncated, stdout_artifact_failed) = stdout_thread
         .and_then(|thread| thread.join().ok())
         .unwrap_or_default();
-    let (stderr, stderr_truncated) = stderr_thread
+    let (stderr, stderr_truncated, _) = stderr_thread
         .and_then(|thread| thread.join().ok())
         .unwrap_or_default();
     if let Some(thread) = stdin_thread {
@@ -425,6 +543,12 @@ pub fn execute(
         error_code,
         error,
     };
+    if result.status == "COMPLETED" && stdout_artifact_failed {
+        result.status = "FAILED".to_string();
+        result.exit_code = None;
+        result.error_code = "output_artifact_failed".to_string();
+        result.error = "stdout artifact could not be written within its size limit".to_string();
+    }
     let mut output_artifacts = Vec::new();
     let mut cleanup_directory = workspace;
     if result.status == "COMPLETED" && !task.spec.output_artifacts.is_empty() {
@@ -480,15 +604,15 @@ fn collect_output_artifacts(task: &GeneralTaskEnvelope) -> Result<Vec<ProducedAr
     let directory = PathBuf::from(&task.spec.working_directory);
     let mut artifacts = Vec::with_capacity(task.spec.output_artifacts.len());
     for requested in &task.spec.output_artifacts {
-        let name = Path::new(&requested.name);
-        if name.file_name().and_then(|value| value.to_str()) != Some(requested.name.as_str()) {
+        if !safe_artifact_name(&requested.name) {
             return Err(format!("unsafe output artifact name: {}", requested.name));
         }
+        let name = Path::new(&requested.name);
         let path = directory.join(name);
-        let metadata = fs::metadata(&path).map_err(|error| {
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
             format!("output artifact {} is unavailable: {error}", requested.name)
         })?;
-        if !metadata.is_file() {
+        if !metadata.file_type().is_file() {
             return Err(format!(
                 "output artifact {} is not a regular file",
                 requested.name
@@ -511,9 +635,11 @@ fn collect_output_artifacts(task: &GeneralTaskEnvelope) -> Result<Vec<ProducedAr
 
 #[cfg(test)]
 mod tests {
-    use super::execute;
+    use super::{apply_workload_environment, capture_output, execute, safe_artifact_name};
     use crate::protocol::{ArtifactSpec, GeneralTaskEnvelope, GeneralTaskSpec};
     use std::fs;
+    use std::io::Cursor;
+    use std::process::Command;
     use std::sync::{Arc, Mutex, atomic::AtomicBool};
 
     fn task(executable: &str, arguments: &[&str]) -> GeneralTaskEnvelope {
@@ -562,6 +688,125 @@ mod tests {
     }
 
     #[test]
+    fn workload_environment_is_cleared_and_sensitive_overrides_are_rejected() {
+        let workspace = std::env::temp_dir();
+        let mut command = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+        command.env("NODREN_WORKER_TOKEN", "must-not-leak");
+        apply_workload_environment(
+            &mut command,
+            &[
+                ("SAFE_VALUE".to_string(), "expected".to_string()),
+                ("NODREN_TEST_VALUE".to_string(), "custom".to_string()),
+            ],
+            &workspace.to_string_lossy(),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        command.args([
+            "/C",
+            "echo %NODREN_WORKER_TOKEN% & echo %SAFE_VALUE% & echo %NODREN_TEST_VALUE%",
+        ]);
+        #[cfg(not(windows))]
+        command.args([
+            "-c",
+            "printf '%s|%s|%s' \"${NODREN_WORKER_TOKEN-unset}\" \"$SAFE_VALUE\" \"$NODREN_TEST_VALUE\"",
+        ]);
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let output = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !output.contains("must-not-leak"),
+            "worker token leaked: {output}"
+        );
+        #[cfg(not(windows))]
+        assert!(output.contains("unset"), "worker token leaked: {output}");
+        assert!(
+            output.contains("expected"),
+            "explicit variable missing: {output}"
+        );
+        assert!(
+            output.contains("custom"),
+            "custom Nodren-namespaced variable missing: {output}"
+        );
+
+        let mut command = Command::new("unused");
+        let error = apply_workload_environment(
+            &mut command,
+            &[("CLOUD_API_KEY".to_string(), "secret".to_string())],
+            &workspace.to_string_lossy(),
+        )
+        .unwrap_err();
+        assert!(error.contains("sensitive"));
+    }
+
+    #[test]
+    fn workload_workspace_is_created_and_user_directory_is_rejected() {
+        let execution = execute(
+            task(if cfg!(windows) { "cmd.exe" } else { "sh" }, &[]),
+            Arc::new(AtomicBool::new(false)),
+            std::collections::HashMap::new(),
+            None,
+        );
+        assert_eq!(execution.result.status, "COMPLETED");
+        assert!(execution.cleanup_directory.is_none());
+
+        let mut task = task(if cfg!(windows) { "cmd.exe" } else { "sh" }, &[]);
+        let external_directory =
+            std::env::temp_dir().join(format!("nodren-external-{}", std::process::id()));
+        fs::create_dir_all(&external_directory).unwrap();
+        task.spec.working_directory = external_directory.to_string_lossy().into_owned();
+        let execution = execute(
+            task,
+            Arc::new(AtomicBool::new(false)),
+            std::collections::HashMap::new(),
+            None,
+        );
+        assert_eq!(execution.result.status, "FAILED");
+        assert!(
+            external_directory.exists(),
+            "external directory was removed"
+        );
+        fs::remove_dir_all(external_directory).unwrap();
+    }
+
+    #[test]
+    fn artifact_names_reject_path_and_device_names() {
+        for name in [
+            "../secret",
+            "C:secret",
+            r"sub\file",
+            "NUL",
+            "COM1.txt",
+            "bad.",
+        ] {
+            assert!(!safe_artifact_name(name), "unsafe name accepted: {name}");
+        }
+        for name in ["result.txt", "model-1.bin", "data set.json"] {
+            assert!(safe_artifact_name(name), "valid name rejected: {name}");
+        }
+    }
+
+    #[test]
+    fn unsafe_output_artifact_is_rejected_before_execution() {
+        let mut task = task("unused", &[]);
+        task.spec.output_artifacts = vec![ArtifactSpec {
+            id: "OUT-1".to_string(),
+            name: "../outside.txt".to_string(),
+            size: 0,
+            sha256: String::new(),
+            kind: "output".to_string(),
+        }];
+        let result = execute(
+            task,
+            Arc::new(AtomicBool::new(false)),
+            std::collections::HashMap::new(),
+            None,
+        );
+        assert_eq!(result.result.status, "FAILED");
+        assert_eq!(result.result.error_code, "artifact_prepare_failed");
+    }
+
+    #[test]
     fn executes_process_and_captures_stdout() {
         #[cfg(windows)]
         let task = task("cmd.exe", &["/C", "echo hello"]);
@@ -595,6 +840,38 @@ mod tests {
         );
         assert_eq!(result.result.status, "COMPLETED");
         assert!(String::from_utf8_lossy(&chunks.lock().unwrap()).contains("streamed"));
+    }
+
+    #[test]
+    fn output_capture_limits_artifacts_and_streaming() {
+        let artifact = std::env::temp_dir().join(format!(
+            "nodren-output-limit-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let streamed = Arc::new(Mutex::new(Vec::new()));
+        let target = Arc::clone(&streamed);
+        let (output, truncated, artifact_failed) = capture_output(
+            Cursor::new(b"abcdef".to_vec()),
+            3,
+            Some(artifact.clone()),
+            3,
+            Some(Arc::new(move |chunk: &[u8]| {
+                target.lock().unwrap().extend_from_slice(chunk);
+            })),
+        )
+        .join()
+        .unwrap();
+
+        assert_eq!(output, b"abc");
+        assert!(truncated);
+        assert!(artifact_failed);
+        assert_eq!(&*streamed.lock().unwrap(), b"abc");
+        assert_eq!(fs::read(&artifact).unwrap(), b"abc");
+        fs::remove_file(artifact).unwrap();
     }
 
     #[test]
