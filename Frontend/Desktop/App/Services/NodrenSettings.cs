@@ -16,7 +16,8 @@ public static class NodrenSettingsStore
 
     public static NodrenSettings Load()
     {
-        var configured = Environment.GetEnvironmentVariable("NODREN_CONTROLLER_URL")
+        var configured = Environment.GetEnvironmentVariable("NODREN_MANAGED_CONTROLLER_URL")
+            ?? Environment.GetEnvironmentVariable("NODREN_CONTROLLER_URL")
             ?? Environment.GetEnvironmentVariable("NODREN_HTTP_ADDR");
         if (!string.IsNullOrWhiteSpace(configured))
         {

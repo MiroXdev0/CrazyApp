@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <AssemblyName>nodren-ui</AssemblyName>
+    <AssemblyName>Norden</AssemblyName>
     <RootNamespace>App</RootNamespace>
     <ApplicationTitle>Nodren</ApplicationTitle>
     <Version>0.2.0</Version>
@@ -16,6 +16,10 @@
 
   <ItemGroup>
     <AvaloniaResource Include="Assets\**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(NodrenControllerPath)' != ''">
+    <EmbeddedResource Include="$(NodrenControllerPath)" LogicalName="Nodren.Controller.exe" />
   </ItemGroup>
 
   <ItemGroup>

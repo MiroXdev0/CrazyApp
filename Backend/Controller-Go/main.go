@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -430,6 +431,8 @@ type Controller struct {
 	nextSubscriber     uint64
 	lastTelemetryEvent map[string]time.Time
 	statePath          string
+	shutdownToken      string
+	shutdown           func()
 
 	tcpAddr   string
 	httpAddr  string
@@ -2426,6 +2429,9 @@ func (c *Controller) createJob(req jobRequest) (*Job, error) {
 func (c *Controller) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", c.handleHealth)
+	if c.shutdownToken != "" && c.shutdown != nil {
+		mux.HandleFunc("/internal/shutdown", c.handleShutdown)
+	}
 	mux.HandleFunc("/v1/controller/info", c.handleControllerInfo)
 	mux.HandleFunc("/v1/cluster/status", c.handleClusterStatus)
 	mux.HandleFunc("/v1/events", c.handleEvents)
@@ -2446,6 +2452,27 @@ func (c *Controller) routes() http.Handler {
 	mux.HandleFunc("/v1/artifacts", c.handleArtifacts)
 	mux.HandleFunc("/v1/artifacts/", c.handleArtifact)
 	return mux
+}
+
+func (c *Controller) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	ip := net.ParseIP(host)
+	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if ip == nil || !ip.IsLoopback() || len(token) != len(c.shutdownToken) ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(c.shutdownToken)) != 1 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	go c.shutdown()
 }
 
 func (c *Controller) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -3151,6 +3178,10 @@ func serveController() {
 
 	controller := NewController(tcpAddr, httpAddr)
 	controller.statePath = getenv("NODREN_STATE_FILE", "nodren-state.json")
+	controller.shutdownToken = strings.TrimSpace(os.Getenv("NODREN_SHUTDOWN_TOKEN"))
+	if controller.shutdownToken != "" {
+		controller.shutdown = stop
+	}
 	if err := controller.loadState(); err != nil {
 		log.Fatalf("controller state recovery: %v", err)
 	}

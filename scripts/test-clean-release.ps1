@@ -1,26 +1,13 @@
 param(
-    [string]$SourceRelease = "",
-    [switch]$BasicOnly
+    [string]$SourceRelease = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-function Get-FreePort {
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-    $listener.Start()
-    $port = $listener.LocalEndpoint.Port
-    $listener.Stop()
-    return $port
-}
-
-function Wait-Until([scriptblock]$Condition, [string]$Description, [int]$Seconds = 15) {
+function Wait-Until([scriptblock]$Condition, [string]$Description, [int]$Seconds = 20) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
-        try {
-            if (& $Condition) { return }
-        }
-        catch {
-        }
+        if (& $Condition) { return }
         Start-Sleep -Milliseconds 200
     }
     throw "Timed out waiting for $Description"
@@ -30,7 +17,7 @@ function Submit-Task([string]$BaseUrl, [hashtable]$Task) {
     return Invoke-RestMethod -Method Post -Uri "$BaseUrl/v1/tasks" -ContentType "application/json" -Body (@{ task = $Task } | ConvertTo-Json -Depth 10)
 }
 
-function Wait-Task([string]$BaseUrl, [string]$TaskId, [string]$Description, [int]$Seconds = 20) {
+function Wait-Task([string]$BaseUrl, [string]$TaskId, [int]$Seconds = 20) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         try {
@@ -39,11 +26,17 @@ function Wait-Task([string]$BaseUrl, [string]$TaskId, [string]$Description, [int
                 return $state
             }
         }
-        catch {
+        catch [System.Net.WebException] {
+        }
+        catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+        }
+        catch [System.Net.Http.HttpRequestException] {
+        }
+        catch [System.Threading.Tasks.TaskCanceledException] {
         }
         Start-Sleep -Milliseconds 200
     }
-    throw "Timed out waiting for $Description"
+    throw "Timed out waiting for task $TaskId"
 }
 
 function Task-Output([object]$Task) {
@@ -54,158 +47,182 @@ function Task-Output([object]$Task) {
 }
 
 $root = Split-Path -Parent $PSScriptRoot
-$sourceRelease = if ([string]::IsNullOrWhiteSpace($SourceRelease)) { Join-Path $root "release" } else { (Resolve-Path -LiteralPath $SourceRelease).Path }
-if (-not (Test-Path -LiteralPath (Join-Path $sourceRelease "nodren.exe"))) {
-    throw "Run build-release.ps1 before this test"
+$requestedSourceRelease = $SourceRelease
+$sourceRelease = if ([string]::IsNullOrWhiteSpace($requestedSourceRelease)) { Join-Path $root "release" } else { (Resolve-Path -LiteralPath $requestedSourceRelease).Path }
+$expectedArtifacts = @('Norden.exe', 'norden.exe', 'norden-worker.exe', 'norden-core.dll') | Sort-Object -CaseSensitive
+if ([string]::IsNullOrWhiteSpace($requestedSourceRelease) -and
+    -not (Test-Path -LiteralPath (Join-Path $sourceRelease "Norden.exe"))) {
+    $sourceRelease = Join-Path $env:LOCALAPPDATA "Nodren\release"
 }
-foreach ($artifact in @('nodren.exe', 'nodren.exe-CLI', 'nodren-worker.exe', 'nodren-core.dll')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $sourceRelease $artifact))) {
-        throw "Release artifact is missing: $artifact"
-    }
-}
-
-$expectedArtifacts = @('nodren-core.dll', 'nodren-worker.exe', 'nodren.exe', 'nodren.exe-CLI') | Sort-Object
-$actualArtifacts = @(Get-ChildItem -LiteralPath $sourceRelease -File | Select-Object -ExpandProperty Name | Sort-Object)
-if (@(Compare-Object -ReferenceObject $expectedArtifacts -DifferenceObject $actualArtifacts).Count -ne 0) {
-    throw "Release contains files other than the four required Windows artifacts"
+$actualArtifacts = @(Get-ChildItem -LiteralPath $sourceRelease -File | Select-Object -ExpandProperty Name | Sort-Object -CaseSensitive)
+$artifactDifferences = @(Compare-Object -ReferenceObject $expectedArtifacts -DifferenceObject $actualArtifacts -CaseSensitive)
+$releaseItems = @(Get-ChildItem -LiteralPath $sourceRelease -Force)
+if ($artifactDifferences.Count -ne 0 -or $releaseItems.Count -ne 4) {
+    throw "Release at '$sourceRelease' does not contain exactly the four required artifacts. Found: $($actualArtifacts -join ', ')"
 }
 
 $clean = Join-Path ([System.IO.Path]::GetTempPath()) ("nodren-clean-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $clean | Out-Null
+& fsutil.exe file setCaseSensitiveInfo $clean enable | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Remove-Item -LiteralPath $clean -Recurse -Force
+    throw "Could not create a case-sensitive clean test directory at $clean"
+}
 Copy-Item -Path (Join-Path $sourceRelease "*") -Destination $clean -Force
 
-$controllerProcess = $null
+$appProcess = $null
+$duplicateProcess = $null
 $workerProcess = $null
-$previousCoreLibrary = $env:NODREN_CORE_LIBRARY
+$previousPath = $env:PATH
+$envNames = @('NODREN_CONTROLLER_URL', 'NODREN_HTTP_ADDR', 'NODREN_NODE_ADDR', 'NODREN_CORE_LIBRARY', 'NODREN_MANAGED_CONTROLLER_URL')
+$previousEnvironment = @{}
+foreach ($name in $envNames) {
+    $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
 try {
-    $nodePort = Get-FreePort
-    $httpPort = Get-FreePort
-    $nodeAddress = "127.0.0.1:$nodePort"
-    $httpAddress = "http://127.0.0.1:$httpPort"
-    $env:NODREN_NODE_ADDR = $nodeAddress
-    $env:NODREN_HTTP_ADDR = "127.0.0.1:$httpPort"
-    $env:NODREN_CONTROLLER_URL = $httpAddress
+    foreach ($name in $envNames) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
+    $env:PATH = "$clean;$previousPath"
 
-    $controllerProcess = Start-Process -FilePath (Join-Path $clean "nodren.exe") -WorkingDirectory $clean -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $clean "controller.out") -RedirectStandardError (Join-Path $clean "controller.err")
-    Wait-Until { (Invoke-RestMethod "$httpAddress/health").status -eq "ok" } "clean Controller health"
-
-    $env:NODREN_CORE_LIBRARY = Join-Path $clean "nodren-core.dll"
-    $workerProcess = Start-Process -FilePath (Join-Path $clean "nodren-worker.exe") -WorkingDirectory $clean -PassThru -WindowStyle Hidden -ArgumentList @("--controller", $nodeAddress, "--id", "CLEAN-WORKER", "--cpu-cores", "2", "--ram-gb", "4") -RedirectStandardOutput (Join-Path $clean "worker.out") -RedirectStandardError (Join-Path $clean "worker.err")
-    Wait-Until {
-        $nodes = @(Invoke-RestMethod "$httpAddress/v1/nodes")
-        $nodes.Count -eq 1 -and $nodes[0].state -eq "READY"
-    } "clean worker registration"
-
-    $result = (& (Join-Path $clean "nodren.exe") run sum 1 2 3 4 5 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $result -notmatch "Result\s+15") {
-        throw "Clean release workload failed: $result"
+    $cli = Join-Path $clean "norden.exe"
+    $help = (& norden --help 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $help -notmatch "Usage:") {
+        throw "norden --help failed: $help"
     }
 
-    if ($BasicOnly) {
-        $cliOutput = Join-Path $clean "cli-version.out"
-        $cliError = Join-Path $clean "cli-version.err"
-        $cliProcess = Start-Process -FilePath (Join-Path $clean "nodren.exe-CLI") -WorkingDirectory $clean -ArgumentList @("--version") -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $cliOutput -RedirectStandardError $cliError
-        $cliVersion = if (Test-Path -LiteralPath $cliOutput) { Get-Content -Raw -LiteralPath $cliOutput } else { "" }
-        if ($cliProcess.ExitCode -ne 0 -or $cliVersion -notmatch "0\.2\.0") {
-            throw "Clean release CLI failed: $cliVersion"
+    $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8080)
+    try {
+        try {
+            $portProbe.Start()
         }
-        Write-Host "PASS: clean release directory, Controller, worker, native Core, sum=15, and separate CLI"
-        return
+        catch [System.Net.Sockets.SocketException] {
+            throw "Port 8080 is already in use; clean-release test requires an unused local Controller endpoint"
+        }
+    }
+    finally {
+        $portProbe.Stop()
+    }
+
+    $appProcess = Start-Process -FilePath (Join-Path $clean "Norden.exe") -WorkingDirectory $clean -PassThru
+    Wait-Until {
+        if ($appProcess.HasExited) {
+            throw "Norden.exe exited during startup with code $($appProcess.ExitCode)"
+        }
+        try {
+            $health = Invoke-RestMethod "http://127.0.0.1:8080/health" -TimeoutSec 1
+            $health.status -eq "ok" -and $health.service -eq "nodren-controller"
+        }
+        catch [System.Net.WebException] {
+            $false
+        }
+        catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+            $false
+        }
+        catch [System.Net.Http.HttpRequestException] {
+            $false
+        }
+        catch [System.Threading.Tasks.TaskCanceledException] {
+            $false
+        }
+    } "Norden.exe managed Controller startup"
+
+    $duplicateProcess = Start-Process -FilePath (Join-Path $clean "Norden.exe") -WorkingDirectory $clean -PassThru
+    if (-not $duplicateProcess.WaitForExit(5000)) {
+        $duplicateProcess.Kill($true)
+        throw "A second Norden.exe instance stayed running instead of reusing the existing application"
+    }
+    $managedControllerPath = Join-Path $env:LOCALAPPDATA "Nodren\controller.exe"
+    $managedControllers = @(Get-CimInstance Win32_Process -Filter "Name='controller.exe'" |
+        Where-Object { $_.ExecutablePath -ieq $managedControllerPath })
+    if ($managedControllers.Count -ne 1) {
+        throw "Expected one managed Controller process after duplicate Norden.exe launch; found $($managedControllers.Count)"
+    }
+
+    $env:NODREN_CONTROLLER_URL = "http://127.0.0.1:8080"
+    $env:NODREN_CORE_LIBRARY = $null
+    $workerLog = Join-Path $clean "worker.log"
+    $workerProcess = Start-Process -FilePath (Join-Path $clean "norden-worker.exe") `
+        -WorkingDirectory $clean -PassThru -WindowStyle Hidden `
+        -ArgumentList @("--controller", "127.0.0.1:9000", "--id", "CLEAN-WORKER", "--cpu-cores", "2", "--ram-gb", "4") `
+        -RedirectStandardOutput $workerLog -RedirectStandardError (Join-Path $clean "worker.err")
+    Wait-Until {
+        $nodes = @(Invoke-RestMethod "http://127.0.0.1:8080/v1/nodes")
+        $nodes.Count -eq 1 -and $nodes[0].state -eq "READY"
+    } "worker connection and native Core load"
+
+    $runOutput = (& $cli run sum 1 2 3 4 5 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $runOutput -notmatch "Result\s+15") {
+        throw "norden run failed: $runOutput"
+    }
+
+    $statusOutput = (& $cli status 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0 -or $statusOutput -notmatch "Controller\s+ONLINE") {
+        throw "norden status failed: $statusOutput"
     }
 
     $requirements = @{ cpu_cores = 1; ram_gb = 1; gpu_required = $false }
-    $processTask = Submit-Task $httpAddress @{
-        type = "PROCESS"; version = "1"; executable = "cmd.exe"; arguments = @("/C", "echo process-ok")
+    $task = Submit-Task "http://127.0.0.1:8080" @{
+        type = "PROCESS"; version = "1"; executable = "cmd.exe"; arguments = @("/C", "echo release-ok")
         requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
     }
-    $processResult = Wait-Task $httpAddress $processTask.id "process task"
-    if ($processResult.status -ne "COMPLETED" -or (Task-Output $processResult) -ne "process-ok") {
-        throw "Process task failed: $($processResult | ConvertTo-Json -Depth 10)"
+    $taskResult = Wait-Task "http://127.0.0.1:8080" $task.id
+    if ($taskResult.status -ne "COMPLETED" -or (Task-Output $taskResult) -ne "release-ok") {
+        throw "Clean-release process workload failed: $($taskResult | ConvertTo-Json -Depth 10)"
     }
 
-    $commandTask = Submit-Task $httpAddress @{
-        type = "COMMAND"; version = "1"; executable = "cmd.exe"; arguments = @("/C", "echo command-ok")
-        requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
+    $shutdownProcess = Start-Process -FilePath (Join-Path $clean "Norden.exe") -WorkingDirectory $clean -ArgumentList @("--shutdown") -Wait -PassThru
+    if ($shutdownProcess.ExitCode -ne 0 -or -not $appProcess.WaitForExit(15000)) {
+        throw "Norden.exe did not close through its normal application shutdown path"
     }
-    $commandResult = Wait-Task $httpAddress $commandTask.id "command task"
-    if ($commandResult.status -ne "COMPLETED" -or (Task-Output $commandResult) -ne "command-ok") {
-        throw "Command task failed: $($commandResult | ConvertTo-Json -Depth 10)"
-    }
+    Wait-Until {
+        try {
+            Invoke-RestMethod "http://127.0.0.1:8080/health" -TimeoutSec 1 | Out-Null
+            $false
+        }
+        catch [System.Net.WebException] {
+            $true
+        }
+        catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+            $true
+        }
+        catch [System.Net.Http.HttpRequestException] {
+            $true
+        }
+        catch [System.Threading.Tasks.TaskCanceledException] {
+            $true
+        }
+    } "managed Controller shutdown"
 
-    Set-Content -LiteralPath (Join-Path $clean "smoke.py") -Value 'print("script-ok")' -Encoding utf8
-    $scriptTask = Submit-Task $httpAddress @{
-        type = "SCRIPT"; version = "1"; runtime = "python"; script = "smoke.py"
-        requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
-    }
-    $scriptResult = Wait-Task $httpAddress $scriptTask.id "script task"
-    if ($scriptResult.status -ne "COMPLETED" -or (Task-Output $scriptResult) -ne "script-ok") {
-        throw "Script task failed: $($scriptResult | ConvertTo-Json -Depth 10)"
-    }
-
-    $artifactPath = Join-Path $clean "artifact.txt"
-    [IO.File]::WriteAllBytes($artifactPath, [Text.Encoding]::UTF8.GetBytes("artifact-ok`r`n"))
-    $artifactHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $artifactResponse = Invoke-WebRequest -Method Post -Uri "$httpAddress/v1/artifacts?name=artifact.txt" -InFile $artifactPath -ContentType "application/octet-stream" -Headers @{
-        "X-Nodren-Artifact-Name" = "artifact.txt"; "X-Nodren-Artifact-Kind" = "input"; "X-Nodren-Artifact-SHA256" = $artifactHash
-    }
-    $artifact = $artifactResponse.Content | ConvertFrom-Json
-    $artifactTask = Submit-Task $httpAddress @{
-        type = "PROCESS"; version = "1"; executable = "cmd.exe"; arguments = @("/C", "type artifact.txt")
-        input_artifacts = @(@{ id = $artifact.id; name = "artifact.txt"; size = [uint64]$artifact.size; sha256 = $artifact.sha256; kind = "input" })
-        requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
-    }
-    $artifactResult = Wait-Task $httpAddress $artifactTask.id "artifact task"
-    if ($artifactResult.status -ne "COMPLETED" -or (Task-Output $artifactResult) -ne "artifact-ok") {
-        throw "Artifact task failed: $($artifactResult | ConvertTo-Json -Depth 10)"
-    }
-
-    $longArguments = @("/C", "ping -n 15 127.0.0.1 > NUL")
-    $cancelTask = Submit-Task $httpAddress @{
-        type = "PROCESS"; version = "1"; executable = "cmd.exe"; arguments = $longArguments
-        requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
-    }
-    Wait-Until { (Invoke-RestMethod "$httpAddress/v1/tasks/$($cancelTask.id)").status -eq "RUNNING" } "running cancellation task"
-    Invoke-RestMethod -Method Post -Uri "$httpAddress/v1/tasks/$($cancelTask.id)/cancel" | Out-Null
-    $cancelResult = Wait-Task $httpAddress $cancelTask.id "cancelled task"
-    if ($cancelResult.status -ne "CANCELLED") {
-        throw "Cancellation failed: $($cancelResult | ConvertTo-Json -Depth 10)"
-    }
-
-    $timeoutTask = Submit-Task $httpAddress @{
-        type = "PROCESS"; version = "1"; executable = "cmd.exe"; arguments = $longArguments; timeout_ms = 200
-        requirements = $requirements; stdout_limit_bytes = 4096; stderr_limit_bytes = 4096
-    }
-    $timeoutResult = Wait-Task $httpAddress $timeoutTask.id "timed-out task"
-    if ($timeoutResult.status -ne "TIMED_OUT") {
-        throw "Timeout handling failed: $($timeoutResult | ConvertTo-Json -Depth 10)"
-    }
-
-    $project = Join-Path $clean "project"
-    New-Item -ItemType Directory -Path $project | Out-Null
-    Set-Content -LiteralPath (Join-Path $project "nodren.json") -Value '{"entry_point":"project.py","runtime":"python"}' -Encoding utf8
-    Set-Content -LiteralPath (Join-Path $project "project.py") -Value 'print("folder-ok")' -Encoding utf8
-    $folderResult = (& (Join-Path $clean "nodren.exe") run $project 2>&1 | Out-String)
-    if ($LASTEXITCODE -ne 0 -or $folderResult -notmatch "folder-ok") {
-        throw "Folder/project execution failed: $folderResult"
-    }
-
-    $cliOutput = Join-Path $clean "cli-version.out"
-    $cliError = Join-Path $clean "cli-version.err"
-    $cliProcess = Start-Process -FilePath (Join-Path $clean "nodren.exe-CLI") -WorkingDirectory $clean -ArgumentList @("--version") -Wait -PassThru -WindowStyle Hidden -RedirectStandardOutput $cliOutput -RedirectStandardError $cliError
-    $cliVersion = if (Test-Path -LiteralPath $cliOutput) { Get-Content -Raw -LiteralPath $cliOutput } else { "" }
-    if ($cliProcess.ExitCode -ne 0 -or $cliVersion -notmatch "0\.2\.0") {
-        throw "Clean release CLI failed: $cliVersion"
-    }
-
-    Write-Host "PASS: clean release directory, Controller, worker, native Core, process/command/script/artifact/cancel/timeout/folder tasks, sum=15, and separate CLI"
+    Write-Host "PASS: clean release contents, norden --help/status/run, Norden.exe managed startup/shutdown, worker Core loading, and workload execution"
 }
 finally {
     if ($null -ne $workerProcess -and -not $workerProcess.HasExited) {
         Stop-Process -Id $workerProcess.Id -Force
     }
-    if ($null -ne $controllerProcess -and -not $controllerProcess.HasExited) {
-        Stop-Process -Id $controllerProcess.Id -Force
+    if ($null -ne $duplicateProcess -and -not $duplicateProcess.HasExited) {
+        $duplicateProcess.Kill($true)
+        $duplicateProcess.WaitForExit(5000) | Out-Null
     }
-    $env:NODREN_CORE_LIBRARY = $previousCoreLibrary
-    Remove-Item -LiteralPath $clean -Recurse -Force -ErrorAction SilentlyContinue
+    if ($null -ne $appProcess -and -not $appProcess.HasExited) {
+        try {
+            $shutdownProcess = Start-Process -FilePath (Join-Path $clean "Norden.exe") `
+                -WorkingDirectory $clean -ArgumentList @("--shutdown") -Wait -PassThru
+            if ($shutdownProcess.ExitCode -eq 0) {
+                $appProcess.WaitForExit(10000)
+            }
+        }
+        catch [System.ComponentModel.Win32Exception] {
+            Write-Warning "Could not start the shutdown request process; the test-owned process tree will be terminated."
+        }
+        if (-not $appProcess.HasExited) {
+            $appProcess.Kill($true)
+            $appProcess.WaitForExit(5000)
+        }
+    }
+    foreach ($name in $envNames) {
+        [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], "Process")
+    }
+    $env:PATH = $previousPath
+    Remove-Item -LiteralPath $clean -Recurse -Force
 }

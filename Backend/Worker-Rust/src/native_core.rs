@@ -150,7 +150,7 @@ fn resolve_core_library() -> io::Result<PathBuf> {
     }
 
     let library_names: &[&str] = if cfg!(windows) {
-        &["nodren-core.dll", "nodren_core.dll"]
+        &["norden-core.dll", "nodren-core.dll", "nodren_core.dll"]
     } else if cfg!(target_os = "macos") {
         &["libnodren_core.dylib"]
     } else {

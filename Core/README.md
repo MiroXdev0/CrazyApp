@@ -295,20 +295,30 @@ An optimized implementation that produces incorrect results is not considered an
 
 ### Windows
 
-From the `Core` directory:
+The supported Windows release DLL is built by the Rust Worker build script
+as part of the full release build. From the repository root, run:
 
 ```powershell
-.\build_core.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
-The Windows native library is:
+The release directory contains exactly:
 
 ```text
-build/
-└── nodren-core.dll
+Norden.exe
+norden.exe
+norden-worker.exe
+norden-core.dll
 ```
 
-The exact build requirements depend on the selected compiler/toolchain.
+`Norden.exe` manages the Go Controller and Avalonia desktop UI.
+`norden.exe` is the Rust CLI. `norden-worker.exe` loads
+`norden-core.dll` beside itself through the C ABI. Do not use the
+standalone Core development script as a release-packaging command.
+
+To build and run the standalone native self-tests during development, see
+`build_core.ps1`; that script builds test executables, not the four-file
+release, and expects its GCC/G++ toolchain on `PATH`.
 
 ---
 
@@ -333,33 +343,8 @@ Linux x64 support is currently **Beta / Unstable**.
 
 A Linux x86-64 compiler/toolchain is required.
 
-The Linux release layout uses:
-
-```text
-release/LinuxX64/
-
-├── nodren-worker
-└── libnodren_core.so
-```
-
----
-
-## Windows release
-
-The native Core is distributed as part of the four-file Windows x64 Nodren release:
-
-```text
-release/
-
-├── nodren.exe
-├── nodren.exe-CLI
-├── nodren-worker.exe
-└── nodren-core.dll
-```
-
-`nodren-core.dll` is consumed by `nodren-worker.exe` when a workload requires the native execution layer.
-
-The Core is not a standalone distributed-computing controller.
+The Linux release scripts are a separate beta/unstable target and do not
+produce or rename the Windows four-file release described above.
 
 ---
 

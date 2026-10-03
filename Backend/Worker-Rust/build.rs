@@ -27,6 +27,7 @@ fn main() {
         core.join("Cpp").join("src").join("workload_dispatch.cpp"),
     ];
     let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let asm = if windows {
         core.join("Assembly")
             .join("X64")
@@ -42,6 +43,82 @@ fn main() {
     println!("cargo:rerun-if-changed={}", source_c.display());
     for source in sources_cpp.iter().chain(std::iter::once(&asm)) {
         println!("cargo:rerun-if-changed={}", source.display());
+    }
+
+    if msvc {
+        let mut objects = Vec::new();
+        let c_object = out.join("nodren_memory.obj");
+        run(
+            "clang-cl",
+            &[
+                "/nologo".into(),
+                "/std:c11".into(),
+                "/O2".into(),
+                "/DNDEBUG".into(),
+                "/MT".into(),
+                format!("/I{}", include_c.display()),
+                "/c".into(),
+                source_c.display().to_string(),
+                format!("/Fo{}", c_object.display()),
+            ],
+        );
+        objects.push(c_object);
+
+        for (index, source) in sources_cpp.iter().enumerate() {
+            let object = out.join(format!("core-{index}.obj"));
+            run(
+                "cl",
+                &[
+                    "/nologo".into(),
+                    "/std:c++20".into(),
+                    "/O2".into(),
+                    "/DNDEBUG".into(),
+                    "/MT".into(),
+                    format!("/I{}", include_c.display()),
+                    format!("/I{}", include_cpp.display()),
+                    "/c".into(),
+                    source.display().to_string(),
+                    format!("/Fo{}", object.display()),
+                ],
+            );
+            objects.push(object);
+        }
+
+        let asm_object = out.join("sum_avx2.obj");
+        run(
+            "clang",
+            &[
+                "--target=x86_64-pc-windows-msvc".into(),
+                "-c".into(),
+                "-O3".into(),
+                asm.display().to_string(),
+                "-o".into(),
+                asm_object.display().to_string(),
+            ],
+        );
+        objects.push(asm_object);
+
+        let library = out.join("nodren-core.dll");
+        let mut link_args = vec![
+            "/NOLOGO".into(),
+            "/DLL".into(),
+            format!("/OUT:{}", library.display()),
+            "/EXPORT:nodren_core_create".into(),
+            "/EXPORT:nodren_core_initialize".into(),
+            "/EXPORT:nodren_core_destroy".into(),
+            "/EXPORT:nodren_core_submit_sum".into(),
+            "/EXPORT:nodren_core_execute_sum".into(),
+            "/EXPORT:nodren_core_execute_workload".into(),
+            "/EXPORT:nodren_core_wait_idle".into(),
+        ];
+        link_args.extend(
+            objects
+                .into_iter()
+                .map(|object| object.display().to_string()),
+        );
+        run("link", &link_args);
+        println!("cargo:rustc-env=NODREN_CORE_LIBRARY={}", library.display());
+        return;
     }
 
     let c_object = out.join("nodren_memory.o");

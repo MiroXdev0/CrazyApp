@@ -28,16 +28,7 @@ Nodren is intended for real compute workloads rather than games or a single spec
 
 > **Status: Pre-release / active development**
 >
-<<<<<<< HEAD
-> Nodren is currently in **Beta**. The project is actively being developed, and some features may change, break, or be incomplete.
->
-> **Linux support is still under development** and is not yet fully supported. Windows is currently the primary supported platform.
->
-> If you encounter bugs or unexpected behavior, please report them through the project's issue tracker.
-
-=======
 > Windows x64 is the primary development and release target. Linux support is still beta/unstable. Advanced distributed AI execution is experimental.
->>>>>>> 22456f3a4f49c46f7873fe2961ccc622729970e6
 
 ---
 
@@ -73,43 +64,22 @@ This lets a cluster contain machines with different CPU, RAM, GPU, and capabilit
 ## Architecture
 
 ```text
-                  ┌──────────────────┐
-                  │   Nodren CLI     │
-                  │     Rust         │
-                  └────────┬─────────┘
-                           │ HTTP
+       Rust CLI                         Avalonia desktop application
+      norden.exe                              Norden.exe
+          │ HTTP                                  │ manages
+          └────────────────┬──────────────────────┘
                            ▼
-                  ┌──────────────────┐
-                  │  Go Controller   │
-                  ├──────────────────┤
-                  │ HTTP API         │
-                  │ Scheduler        │
-                  │ Job manager      │
-                  │ Worker registry  │
-                  │ Resource state   │
-                  │ Partitioning     │
-                  │ Artifact system  │
-                  │ Recovery         │
-                  └────────┬─────────┘
+                  Go Controller / control plane
+                   HTTP API + scheduler
                            │
-                     TCP / binary
+                persistent TCP binary protocol
                            │
-             ┌─────────────┼─────────────┐
-             ▼             ▼             ▼
-       ┌──────────┐  ┌──────────┐  ┌──────────┐
-       │  Worker  │  │  Worker  │  │  Worker  │
-       │   Rust   │  │   Rust   │  │   Rust   │
-       └────┬─────┘  └────┬─────┘  └────┬─────┘
-            │             │             │
-            ▼             ▼             ▼
-        Local CPU      Local CPU      Local CPU
-        / GPU          / GPU          / GPU
-            │             │             │
-            └──────┬──────┴──────┬──────┘
-                   ▼             ▼
-              Nodren Core   Local execution
-                C/C++          process/script
-                / ASM
+                      Rust Worker
+                   norden-worker.exe
+                           │ C ABI
+                           ▼
+          C / C++ / x86-64 Assembly native Core
+                    norden-core.dll
 ```
 
 ### Main components
@@ -117,11 +87,12 @@ This lets a cluster contain machines with different CPU, RAM, GPU, and capabilit
 | Component    | Technology                | Responsibility                                 |
 | ------------ | ------------------------- | ---------------------------------------------- |
 | Controller   | Go                        | Cluster control plane, scheduler, API, jobs    |
-| Worker       | Rust                      | Local execution and worker lifecycle           |
-| Native Core  | C / C++ / x86-64 Assembly | Low-level native workloads                     |
-| CLI          | Rust                      | Command-line cluster control                   |
-| Desktop UI   | C# / Avalonia             | Cluster monitoring and workload control        |
-| Web frontend | TypeScript / Bun          | Web-side client work                           |
+| Worker       | Rust                      | Persistent TCP client, local workload execution |
+| Native Core  | C / C++ / x86-64 Assembly | Native workloads behind the Worker C ABI      |
+| CLI          | Rust                      | HTTP client for cluster control (`norden.exe`) |
+| Desktop app  | C# / Avalonia             | UI plus managed Go Controller (`Norden.exe`)   |
+| Web frontend | TypeScript / Bun          | Separate web client/frontend                   |
+| Database     | SQL files                 | Schemas and initialization assets; not the Controller's state store |
 | Tests/tools  | Python + Go + scripts     | Testing, diagnostics, benchmarking, automation |
 
 The languages are intentionally split by responsibility rather than forcing the entire project into one language.
@@ -141,13 +112,22 @@ Worker TCP : 9000
 HTTP API   : 8080
 ```
 
-The addresses can be changed through environment variables:
+For a Controller started directly during development, the bind addresses and
+state file can be changed through:
 
 ```text
 NODREN_NODE_ADDR
 NODREN_HTTP_ADDR
 NODREN_STATE_FILE
 ```
+
+`Norden.exe` manages its local Controller on `127.0.0.1:8080` and `:9000`.
+Users launch only `Norden.exe`; they do not start a separate Controller
+executable. The Rust CLI uses `NODREN_CONTROLLER_URL` for the HTTP API address,
+falling back to `NODREN_HTTP_ADDR` and then `http://127.0.0.1:8080`.
+`NODREN_JOB_TIMEOUT_SECS` controls synchronous CLI workload waits (default
+30 seconds). These settings also apply to CLI requests made against a
+development or remote Controller.
 
 The Controller currently handles areas including:
 
@@ -237,7 +217,7 @@ This keeps the native layer focused on low-level execution.
 
 # Workloads
 
-Nodren is moving toward a generalized workload model.
+Nodren supports a generalized workload model.
 
 The runtime can represent workloads such as:
 
@@ -307,9 +287,9 @@ The user can explicitly provide worker percentages.
 The CLI exposes distribution controls:
 
 ```powershell
-nodren distribution show <job-id>
-nodren distribution auto <job-id>
-nodren distribution set <job-id> worker-a=60 worker-b=25 worker-c=15
+norden distribution show <job-id>
+norden distribution auto <job-id>
+norden distribution set <job-id> worker-a=60 worker-b=25 worker-c=15
 ```
 
 The desktop UI also exposes automatic/manual distribution controls.
@@ -515,62 +495,72 @@ Longer-term networking work includes simpler direct/cable-based setups and optio
 
 The Rust CLI is the primary command-line interface for interacting with a running Controller.
 
-The current executable is:
+The Windows release CLI executable is `norden.exe`. Add the release directory
+to `PATH` to run it as `norden`:
 
 ```text
-nodren.exe-CLI
+norden.exe
 ```
 
 Examples:
 
-```powershell
-.\nodren.exe-CLI status
-.\nodren.exe-CLI devices
-.\nodren.exe-CLI workers list
-.\nodren.exe-CLI workers stats
-.\nodren.exe-CLI workers info <worker-id>
-.\nodren.exe-CLI ping <worker-id>
-.\nodren.exe-CLI jobs
-.\nodren.exe-CLI jobs info <job-id>
-.\nodren.exe-CLI jobs stats <job-id>
-.\nodren.exe-CLI jobs partitions <job-id>
-.\nodren.exe-CLI tasks
-.\nodren.exe-CLI distribution show
-.\nodren.exe-CLI distribution auto <job-id>
-.\nodren.exe-CLI distribution set <job-id> worker-a=60 worker-b=40
-.\nodren.exe-CLI events
-.\nodren.exe-CLI doctor
-.\nodren.exe-CLI config
-.\nodren.exe-CLI version
+```text
+norden --help
+norden status
+norden devices
+norden workers list
+norden workers stats
+norden workers info <worker-id>
+norden workers ping <worker-id>
+norden jobs list
+norden jobs info <job-id>
+norden jobs stats <job-id>
+norden jobs partitions <job-id>
+norden tasks list
+norden run sum 1 2 3
+norden run xor 1 2 3
+norden run dot_product 1,2 3,4
+norden run process <executable> -- <arguments...>
+norden run command <executable> -- <arguments...>
+norden run script <runtime> <script> -- <arguments...>
+norden distribution show
+norden distribution auto <job-id>
+norden distribution set <job-id> worker-a=60 worker-b=40
+norden monitor
+norden doctor
+norden config
+norden version
 ```
 
-Run:
-
-```powershell
-.\nodren.exe-CLI help
-```
-
-to see the command set supported by the current build.
+`norden --help` prints the supported commands. Job/task controls also include
+the forms listed there, such as `jobs cancel`, `tasks result`, and
+`tasks retry`.
 
 ---
 
 # Windows release
 
-The Windows release build intentionally produces **four files**:
+The Windows x64 release contains exactly these four user-facing files:
 
 ```text
 release/
-├── nodren.exe
-├── nodren.exe-CLI
-├── nodren-worker.exe
-└── nodren-core.dll
+├── Norden.exe
+├── norden.exe
+├── norden-worker.exe
+└── norden-core.dll
 ```
 
-### `nodren.exe`
+Windows treats filenames case-insensitively by default, so the release directory must have NTFS per-directory case sensitivity enabled to keep `Norden.exe` (the desktop app) distinct from `norden.exe` (the CLI). The build script configures this on the release folder. If the workspace location does not permit it (for example, a protected or synced folder), it writes the release to `%LOCALAPPDATA%\Nodren\release` and prints the actual path.
 
-The main Nodren Controller/server executable.
+### `Norden.exe`
 
-It provides:
+The main Nodren desktop application. It starts the Avalonia UI and manages
+the Go Controller lifecycle internally, including clean Controller shutdown
+when the application exits. The embedded Controller is extracted to the
+user's local Nodren data directory. Users launch only `Norden.exe`; there is
+no separate Controller executable in the release folder.
+
+The Controller provides:
 
 * Controller
 * scheduler
@@ -580,10 +570,10 @@ It provides:
 * worker TCP server
 * state persistence
 
-Run:
+Launch the complete application:
 
 ```powershell
-.\nodren.exe
+.\Norden.exe
 ```
 
 Default addresses:
@@ -593,35 +583,39 @@ TCP :9000
 HTTP :8080
 ```
 
-### `nodren.exe-CLI`
+### `norden.exe`
 
-The standalone Rust CLI used to control and inspect Nodren.
+The standalone Rust CLI used to control and inspect Nodren. Add the release
+directory to `PATH` to invoke it as `norden`.
 
 It communicates with the Controller.
 
-### `nodren-worker.exe`
+### `norden-worker.exe`
 
-The standalone worker runtime.
+The standalone Rust worker runtime. It connects to the Controller's TCP
+listener, receives assigned jobs/tasks, reports heartbeats and results, and
+reconnects according to the worker runtime's existing retry behavior. It
+loads `norden-core.dll` from beside its executable for native workloads.
 
 Example:
 
 ```powershell
-.\nodren-worker.exe --controller 192.168.1.10:9000
+norden-worker.exe --controller 192.168.1.10:9000
 ```
 
 Use the current worker help output for the exact supported arguments.
 
-### `nodren-core.dll`
+### `norden-core.dll`
 
-The native Core library consumed by the worker for native workloads.
+The native Core library consumed by the Worker through the existing C ABI.
+The Worker resolves this DLL beside its own executable.
 
 ---
 
 # Desktop UI
 
-Nodren also contains an Avalonia desktop application.
-
-The UI communicates with the Controller's HTTP API and is useful for:
+`Norden.exe` is the packaged Avalonia desktop application. It manages a local
+Go Controller automatically. The UI provides:
 
 * cluster dashboard
 * worker monitoring
@@ -635,9 +629,8 @@ The UI communicates with the Controller's HTTP API and is useful for:
 
 The current UI includes automatic/manual distribution controls and displays partition progress and scheduler information.
 
-The desktop UI is a client component; it is not required for the Controller → Worker execution path.
-
-It is **not part of the four-file Windows runtime release**.
+The desktop app is not required for the Controller → Worker execution path;
+the CLI and remote Workers can use the Controller API independently.
 
 ---
 
@@ -664,7 +657,7 @@ Nodren/
 │   ├── Desktop/             # Avalonia desktop UI
 │   └── Web/                 # TypeScript/Bun web client
 │
-├── Database/                # Database-related structures
+├── Database/                # SQL initialization, schemas and migrations
 ├── Python/                  # AI, analytics, scripts and tooling
 ├── Tests/                   # Integration and system tests
 ├── docs/                    # Architecture and roadmap
@@ -674,6 +667,10 @@ Nodren/
 ```
 
 Some directories contain work-in-progress or compatibility code. The repository is actively changing, so the layout should not be treated as a frozen API.
+
+The Go Controller currently persists its runtime state to a JSON state file
+(`NODREN_STATE_FILE` when configured). SQL files under `Database/` are
+database assets and are not a configured SQL backend for the Controller.
 
 ---
 
@@ -690,7 +687,8 @@ go vet ./...
 go build .
 ```
 
-The Controller uses Go 1.23 in the current module configuration.
+The Controller module declares Go 1.23. Building/running this component
+directly is for development; the Windows end-user app embeds and manages it.
 
 ---
 
@@ -702,10 +700,15 @@ cargo test
 cargo build
 ```
 
-Release build:
+On Windows, run these commands in a Visual Studio Developer PowerShell session
+with LLVM `clang` available on `PATH`; the Worker build script compiles and
+links the native Core.
+
+For the Windows release, use the root release script so the native Core DLL
+is built, exported, and packaged beside the Worker:
 
 ```powershell
-cargo build --release
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
 ---
@@ -731,14 +734,20 @@ cd Core
 .\build_core.ps1
 ```
 
-Linux:
+The Windows script builds the release DLL as part of the Worker build. The
+standalone Core script builds/runs native self-tests; it does not produce the
+user-facing release on its own and requires its GCC/G++ toolchain on `PATH`.
+Linux native development build:
 
 ```bash
 cd Core
 bash ./build_core.sh
 ```
 
-The exact native compiler/toolchain requirements depend on the target platform.
+The Windows release build requires Go, Rust, .NET 10, Visual Studio C++ Build
+Tools, and LLVM `clang`. The Linux scripts currently describe a separate
+beta/unstable packaging path; the four-file release documented above is the
+Windows release.
 
 ---
 
@@ -750,13 +759,27 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
+The Windows build requires Go, Rust, .NET 10, Visual Studio C++ Build Tools, and LLVM `clang` (for the native assembly kernel). Pass `-ReleaseDirectory <path>` to select an output directory; it must support NTFS per-directory case sensitivity.
+
 The script builds and validates exactly these Windows artifacts:
 
 ```text
-nodren.exe
-nodren.exe-CLI
-nodren-worker.exe
-nodren-core.dll
+Norden.exe
+norden.exe
+norden-worker.exe
+norden-core.dll
+```
+
+Add the release directory to `PATH` to invoke the CLI as `norden`. Windows is
+case-insensitive by default, so the output directory needs NTFS
+per-directory case sensitivity to retain the distinct `Norden.exe` and
+`norden.exe` names. The build script reports its output path and uses
+`%LOCALAPPDATA%\Nodren\release` if the workspace does not permit that setting.
+
+Validate a copied, source-independent release directory with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-clean-release.ps1
 ```
 
 ---
